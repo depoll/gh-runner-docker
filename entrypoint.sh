@@ -39,7 +39,7 @@ exchange_pat_for_token() {
     echo "$token"
 }
 
-# Function to cleanup offline runners with matching deployment ID
+# Function to cleanup truly stale runners with matching deployment ID
 cleanup_offline_runners() {
     if [ -z "$DEPLOYMENT_ID" ]; then
         return
@@ -64,33 +64,66 @@ cleanup_offline_runners() {
         -H "Accept: application/vnd.github.v3+json" \
         "$api_base_url/actions/runners" 2>/dev/null)
     
-    # Extract runners that match our deployment and are offline
-    echo "$runners_response" | jq -r --arg deployment "$DEPLOYMENT_ID" \
-        '.runners[] | select(.labels[]?.name == ("deployment:" + $deployment)) | select(.status == "offline") | .name' 2>/dev/null | \
-    while read -r runner_name; do
+    # Only cleanup runners that have been offline for a significant time (more than 10 minutes)
+    # Use a file to track when we first saw runners as offline
+    local offline_tracker="/tmp/offline_runners"
+    local current_time=$(date +%s)
+    local cleanup_threshold=600  # 10 minutes in seconds
+    
+    # Get currently offline runners from this deployment
+    local offline_runners=$(echo "$runners_response" | jq -r --arg deployment "$DEPLOYMENT_ID" \
+        '.runners[] | select(.labels[]?.name == ("deployment:" + $deployment)) | select(.status == "offline") | .name' 2>/dev/null)
+    
+    # Update tracker file
+    touch "$offline_tracker"
+    local temp_tracker=$(mktemp)
+    
+    # Process each currently offline runner
+    while IFS= read -r runner_name; do
         if [ -n "$runner_name" ]; then
-            echo "$(date): Removing offline runner: $runner_name"
-            # Get a fresh registration token for cleanup
-            local cleanup_token=$(exchange_pat_for_token "$GITHUB_URL" "$GITHUB_TOKEN" 2>/dev/null)
-            if [ -n "$cleanup_token" ]; then
-                ./config.sh remove --token "$cleanup_token" --name "$runner_name" 2>/dev/null || true
+            # Check if this runner was already tracked as offline
+            local first_offline=$(grep "^$runner_name:" "$offline_tracker" 2>/dev/null | cut -d: -f2)
+            
+            if [ -z "$first_offline" ]; then
+                # First time seeing this runner offline, record the time
+                echo "$runner_name:$current_time" >> "$temp_tracker"
+            else
+                # Runner was already offline, check if it's been long enough
+                local offline_duration=$((current_time - first_offline))
+                if [ $offline_duration -gt $cleanup_threshold ]; then
+                    echo "$(date): Removing stale offline runner: $runner_name (offline for ${offline_duration}s)"
+                    # Get a fresh registration token for cleanup
+                    local cleanup_token=$(exchange_pat_for_token "$GITHUB_URL" "$GITHUB_TOKEN" 2>/dev/null)
+                    if [ -n "$cleanup_token" ]; then
+                        ./config.sh remove --token "$cleanup_token" --name "$runner_name" 2>/dev/null || true
+                    fi
+                else
+                    # Still within grace period, keep tracking
+                    echo "$runner_name:$first_offline" >> "$temp_tracker"
+                fi
             fi
         fi
-    done
+    done <<< "$offline_runners"
+    
+    # Update the tracker file with current data
+    mv "$temp_tracker" "$offline_tracker"
 }
 
-# Background cleanup job that runs every 5 minutes
+# Background cleanup job that runs every 15 minutes
 cleanup_job() {
     while true; do
-        sleep 300  # 5 minutes
+        sleep 900  # 15 minutes (was 5 minutes)
         cleanup_offline_runners
     done
 }
 
 # Health check job that monitors if this runner is still registered
 health_check_job() {
+    local check_failures=0
+    local max_failures=3  # Allow 3 consecutive failures before restarting
+    
     while true; do
-        sleep 60  # Check every minute
+        sleep 300  # Check every 5 minutes (was 1 minute)
         
         # Skip if runner hasn't been configured yet
         if [ ! -f ".runner" ]; then
@@ -120,8 +153,19 @@ health_check_job() {
             '.runners[] | select(.name == $name) | .name' 2>/dev/null)
         
         if [ -z "$runner_exists" ]; then
-            echo "$(date): Runner $RUNNER_NAME no longer exists in GitHub - restarting container"
-            exit 1  # Let Docker restart the container
+            check_failures=$((check_failures + 1))
+            echo "$(date): Runner $RUNNER_NAME not found in GitHub (failure $check_failures/$max_failures)"
+            
+            if [ $check_failures -ge $max_failures ]; then
+                echo "$(date): Runner $RUNNER_NAME consistently missing - restarting container"
+                exit 1  # Let Docker restart the container
+            fi
+        else
+            # Reset failure counter on successful check
+            if [ $check_failures -gt 0 ]; then
+                echo "$(date): Runner $RUNNER_NAME found again, resetting failure counter"
+                check_failures=0
+            fi
         fi
     done
 }
