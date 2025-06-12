@@ -42,7 +42,7 @@ docker-compose up -d
 
 Required environment variables:
 - `GITHUB_URL`: Repository or organization URL
-- `GITHUB_TOKEN`: GitHub personal access token or registration token
+- `GITHUB_TOKEN`: GitHub personal access token (PAT) or registration token. If a PAT is provided, it will be automatically exchanged for a registration token using the GitHub API
 
 Optional environment variables:
 - `RUNNER_NAME_PREFIX`: Prefix for runner names (default: "runner")
