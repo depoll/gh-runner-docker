@@ -72,6 +72,11 @@ cleanup() {
 # Set trap for cleanup
 trap cleanup SIGTERM SIGINT
 
+# Start Docker daemon for Docker-in-Docker
+echo "Starting Docker daemon..."
+sudo dockerd &
+sleep 5
+
 
 # Validate required environment variables
 if [ -z "$GITHUB_URL" ]; then

@@ -24,6 +24,8 @@ services:
         delay: 5s
         max_attempts: 3
     restart: unless-stopped
+    # Enable privileged mode for Docker-in-Docker
+    privileged: true
     # Remove any persistent storage to ensure stateless runners
     tmpfs:
       - /tmp
