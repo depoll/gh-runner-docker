@@ -39,6 +39,93 @@ exchange_pat_for_token() {
     echo "$token"
 }
 
+# Function to cleanup offline runners with matching deployment ID
+cleanup_offline_runners() {
+    if [ -z "$DEPLOYMENT_ID" ]; then
+        return
+    fi
+    
+    # Extract owner/repo or org from GitHub URL for API calls
+    local api_base_url
+    if [[ $GITHUB_URL =~ github\.com/([^/]+/[^/]+)/?$ ]]; then
+        # Repository URL
+        local repo_path="${BASH_REMATCH[1]}"
+        api_base_url="https://api.github.com/repos/$repo_path"
+    elif [[ $GITHUB_URL =~ github\.com/([^/]+)/?$ ]]; then
+        # Organization URL
+        local org="${BASH_REMATCH[1]}"
+        api_base_url="https://api.github.com/orgs/$org"
+    else
+        return
+    fi
+    
+    # Get list of runners and filter for this deployment
+    local runners_response=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+        -H "Accept: application/vnd.github.v3+json" \
+        "$api_base_url/actions/runners" 2>/dev/null)
+    
+    # Extract runners that match our deployment and are offline
+    echo "$runners_response" | jq -r --arg deployment "$DEPLOYMENT_ID" \
+        '.runners[] | select(.labels[]?.name == ("deployment:" + $deployment)) | select(.status == "offline") | .name' 2>/dev/null | \
+    while read -r runner_name; do
+        if [ -n "$runner_name" ]; then
+            echo "$(date): Removing offline runner: $runner_name"
+            # Get a fresh registration token for cleanup
+            local cleanup_token=$(exchange_pat_for_token "$GITHUB_URL" "$GITHUB_TOKEN" 2>/dev/null)
+            if [ -n "$cleanup_token" ]; then
+                ./config.sh remove --token "$cleanup_token" --name "$runner_name" 2>/dev/null || true
+            fi
+        fi
+    done
+}
+
+# Background cleanup job that runs every 5 minutes
+cleanup_job() {
+    while true; do
+        sleep 300  # 5 minutes
+        cleanup_offline_runners
+    done
+}
+
+# Health check job that monitors if this runner is still registered
+health_check_job() {
+    while true; do
+        sleep 60  # Check every minute
+        
+        # Skip if runner hasn't been configured yet
+        if [ ! -f ".runner" ]; then
+            continue
+        fi
+        
+        # Extract owner/repo or org from GitHub URL for API calls
+        local api_base_url
+        if [[ $GITHUB_URL =~ github\.com/([^/]+/[^/]+)/?$ ]]; then
+            # Repository URL
+            local repo_path="${BASH_REMATCH[1]}"
+            api_base_url="https://api.github.com/repos/$repo_path"
+        elif [[ $GITHUB_URL =~ github\.com/([^/]+)/?$ ]]; then
+            # Organization URL
+            local org="${BASH_REMATCH[1]}"
+            api_base_url="https://api.github.com/orgs/$org"
+        else
+            continue
+        fi
+        
+        # Check if our runner still exists
+        local runners_response=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$api_base_url/actions/runners" 2>/dev/null)
+        
+        local runner_exists=$(echo "$runners_response" | jq -r --arg name "$RUNNER_NAME" \
+            '.runners[] | select(.name == $name) | .name' 2>/dev/null)
+        
+        if [ -z "$runner_exists" ]; then
+            echo "$(date): Runner $RUNNER_NAME no longer exists in GitHub - restarting container"
+            exit 1  # Let Docker restart the container
+        fi
+    done
+}
+
 # Function to detect if token is PAT or registration token
 is_pat_token() {
     local token="$1"
@@ -90,6 +177,16 @@ echo "Starting Docker daemon..."
 sudo dockerd &
 sleep 5
 
+# Start background cleanup job if DEPLOYMENT_ID is provided
+if [ -n "$DEPLOYMENT_ID" ]; then
+    echo "Starting cleanup job for deployment: $DEPLOYMENT_ID"
+    cleanup_job &
+fi
+
+# Start health check job to monitor if runner gets removed
+echo "Starting health check job"
+health_check_job &
+
 
 # Validate required environment variables
 if [ -z "$GITHUB_URL" ]; then
@@ -118,9 +215,19 @@ echo "Configuring runner: $RUNNER_NAME"
 # Build configuration command
 CONFIG_CMD="./config.sh --url $GITHUB_URL --token $REGISTRATION_TOKEN --name $RUNNER_NAME --work $RUNNER_WORKDIR --unattended --replace"
 
-# Add labels if specified
-if [ -n "$RUNNER_LABELS" ]; then
-    CONFIG_CMD="$CONFIG_CMD --labels $RUNNER_LABELS"
+# Build labels (include deployment ID if provided)
+LABELS="$RUNNER_LABELS"
+if [ -n "$DEPLOYMENT_ID" ]; then
+    if [ -n "$LABELS" ]; then
+        LABELS="$LABELS,deployment:$DEPLOYMENT_ID"
+    else
+        LABELS="deployment:$DEPLOYMENT_ID"
+    fi
+fi
+
+# Add labels if any are specified
+if [ -n "$LABELS" ]; then
+    CONFIG_CMD="$CONFIG_CMD --labels $LABELS"
 fi
 
 # Add runner group if specified

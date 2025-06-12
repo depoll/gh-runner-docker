@@ -17,6 +17,8 @@ services:
       RUNNER_LABELS: ${RUNNER_LABELS:-}
       # Optional: Runner group (default: "default")
       RUNNER_GROUP: ${RUNNER_GROUP:-default}
+      # Optional: Deployment ID for grouping runners
+      DEPLOYMENT_ID: ${DEPLOYMENT_ID:-}
     deploy:
       replicas: ${REPLICAS:-3}
       restart_policy:
