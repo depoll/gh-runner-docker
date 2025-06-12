@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  gh-runner:
+    # Use pre-built image from GitHub Container Registry
+    # image: ghcr.io/your-username/gh-runner-docker:latest
+    # Or build locally
+    build: .
+    environment:
+      # Required: GitHub repository or organization URL
+      GITHUB_URL: ${GITHUB_URL}
+      # Required: GitHub personal access token or registration token
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      # Optional: Runner name prefix (default: "runner")
+      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-runner}
+      # Optional: Runner working directory (default: "_work")
+      RUNNER_WORKDIR: ${RUNNER_WORKDIR:-_work}
+      # Optional: Comma-separated list of labels
+      RUNNER_LABELS: ${RUNNER_LABELS:-}
+      # Optional: Runner group (default: "default")
+      RUNNER_GROUP: ${RUNNER_GROUP:-default}
+    deploy:
+      replicas: ${REPLICAS:-3}
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+    restart: unless-stopped
+    # Remove any persistent storage to ensure stateless runners
+    tmpfs:
+      - /tmp
+    # Optional: Resource limits
+    # mem_limit: 2g
+    # cpus: '1.0'

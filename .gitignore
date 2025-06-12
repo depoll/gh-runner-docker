@@ -1,0 +1,15 @@
+# Environment files
+.env
+
+# Docker
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
