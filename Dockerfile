@@ -40,7 +40,7 @@ RUN useradd -m -s /bin/bash runner && \
 WORKDIR /home/runner
 
 # Download and install GitHub Actions runner based on architecture
-ARG RUNNER_VERSION="2.311.0"
+ARG RUNNER_VERSION="2.325.0"
 RUN ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "amd64" ]; then \
         RUNNER_ARCH="x64"; \

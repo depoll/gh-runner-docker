@@ -1,9 +1,9 @@
 services:
   gh-runner:
     # Use pre-built image from GitHub Container Registry
-    # image: ghcr.io/your-username/gh-runner-docker:latest
-    # Or build locally
-    build: .
+    image: ghcr.io/depoll/gh-runner-docker:latest
+    # Or build locally (comment out image above and uncomment build below)
+    # build: .
     environment:
       # Required: GitHub repository or organization URL
       GITHUB_URL: ${GITHUB_URL}
@@ -34,3 +34,26 @@ services:
     # Optional: Resource limits
     # mem_limit: 2g
     # cpus: '1.0'
+    labels:
+      # Enable Watchtower auto-updates
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    environment:
+      # Check for updates every hour
+      WATCHTOWER_POLL_INTERVAL: 3600
+      # Only update containers with the watchtower.enable label
+      WATCHTOWER_LABEL_ENABLE: true
+      # Clean up old images after updating
+      WATCHTOWER_CLEANUP: true
+      # Include stopped containers in updates
+      WATCHTOWER_INCLUDE_STOPPED: true
+      # Rolling restart for swarm services
+      WATCHTOWER_ROLLING_RESTART: true
+      # Add notifications (optional - uncomment and configure for Slack/email)
+      # WATCHTOWER_NOTIFICATION_URL: ${WATCHTOWER_NOTIFICATION_URL:-}
+    volumes:
+      # Watchtower needs access to Docker socket to manage containers
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
