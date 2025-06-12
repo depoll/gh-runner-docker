@@ -61,11 +61,24 @@ generate_runner_name() {
 
 # Function to cleanup on exit
 cleanup() {
-    echo "Removing runner..."
-    if [ -f ".runner" ]; then
-        # Use the registration token for cleanup
-        ./config.sh remove --token "${REGISTRATION_TOKEN}"
+    echo "Cleaning up runner..."
+    
+    # Kill the runner process if it's still running
+    if [ -n "$runner_pid" ]; then
+        echo "Stopping runner process..."
+        kill -TERM "$runner_pid" 2>/dev/null || true
+        wait "$runner_pid" 2>/dev/null || true
     fi
+    
+    # Always try to deregister runner from GitHub
+    echo "Attempting to deregister runner from GitHub..."
+    ./config.sh remove --token "${REGISTRATION_TOKEN}" --name "${RUNNER_NAME}" 2>/dev/null || {
+        echo "Failed with registration token, trying with original token..."
+        ./config.sh remove --token "${GITHUB_TOKEN}" --name "${RUNNER_NAME}" 2>/dev/null || {
+            echo "Failed to deregister runner - it may have already been removed"
+        }
+    }
+    
     exit 0
 }
 
