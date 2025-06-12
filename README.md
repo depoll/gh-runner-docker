@@ -47,16 +47,19 @@ A scalable Docker-based solution for running multiple GitHub Actions self-hosted
 
 ### Required Environment Variables
 
-- `GITHUB_URL`: Your repository or organization URL
+- `GITHUB_URL`: Your repository or organization URL (e.g., `https://github.com/your-org/your-repo`)
 - `GITHUB_TOKEN`: GitHub personal access token with repo access
 
 ### Optional Environment Variables
 
 - `RUNNER_NAME_PREFIX`: Prefix for runner names (default: "runner")
-- `RUNNER_WORKDIR`: Working directory (default: "_work")  
-- `RUNNER_LABELS`: Comma-separated labels (e.g., "docker,linux,gpu")
+- `RUNNER_WORKDIR`: Working directory (default: "_work")
+- `RUNNER_LABELS`: Comma-separated labels (default: "docker,linux")
 - `RUNNER_GROUP`: Runner group (default: "default")
 - `REPLICAS`: Number of runner instances (default: 3)
+- `DEPLOYMENT_ID`: Optional deployment identifier for grouping runners
+
+> **Note:** Copy `.env.example` to `.env` and edit as needed. All variables above are read from `.env` by default.
 
 ## GitHub Token Setup
 
