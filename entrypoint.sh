@@ -216,10 +216,26 @@ cleanup() {
 # Set trap for cleanup
 trap cleanup SIGTERM SIGINT
 
+# Start containerd first
+echo "Starting containerd..."
+sudo containerd &
+sleep 5
+
 # Start Docker daemon for Docker-in-Docker
 echo "Starting Docker daemon..."
-sudo dockerd &
-sleep 5
+sudo dockerd --host=unix:///var/run/docker.sock --host=tcp://0.0.0.0:2376 &
+sleep 10
+
+# Wait for Docker daemon to be ready
+echo "Waiting for Docker daemon to start..."
+for i in {1..30}; do
+    if docker info >/dev/null 2>&1; then
+        echo "Docker daemon is ready"
+        break
+    fi
+    echo "Waiting for Docker daemon... ($i/30)"
+    sleep 2
+done
 
 # Start background cleanup job if DEPLOYMENT_ID is provided
 if [ -n "$DEPLOYMENT_ID" ]; then
