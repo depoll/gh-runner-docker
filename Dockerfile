@@ -64,6 +64,10 @@ RUN ./bin/installdependencies.sh
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Copy workspace cleanup script
+COPY cleanup-workspace.sh /home/runner/cleanup-workspace.sh
+RUN chmod +x /home/runner/cleanup-workspace.sh
+
 # Switch to runner user
 USER runner
 
