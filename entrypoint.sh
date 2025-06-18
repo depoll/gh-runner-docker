@@ -297,6 +297,11 @@ fi
 
 # Configure the runner
 echo "Configuring GitHub Actions Runner..."
+
+# Set post-job hook for workspace cleanup
+export ACTIONS_RUNNER_HOOK_JOB_COMPLETED="/home/runner/cleanup-workspace.sh"
+echo "Workspace cleanup hook configured: $ACTIONS_RUNNER_HOOK_JOB_COMPLETED"
+
 eval $CONFIG_CMD
 
 # Start the runner
