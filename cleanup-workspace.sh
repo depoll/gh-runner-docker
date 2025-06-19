@@ -6,7 +6,8 @@
 set -e
 
 # Get the workspace directory from environment variable or use default
-WORKSPACE_DIR="${RUNNER_WORKDIR:-_work}"
+# Use absolute path to ensure it works regardless of current working directory
+WORKSPACE_DIR="/home/runner/${RUNNER_WORKDIR:-_work}"
 
 echo "$(date): Starting workspace cleanup for directory: $WORKSPACE_DIR"
 
