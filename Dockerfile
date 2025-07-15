@@ -21,6 +21,8 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     gnupg \
     lsb-release \
+    fuse-overlayfs \
+    iptables \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker (Docker-in-Docker)

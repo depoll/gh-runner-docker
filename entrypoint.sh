@@ -223,8 +223,47 @@ sleep 5
 
 # Start Docker daemon for Docker-in-Docker
 echo "Starting Docker daemon..."
-sudo dockerd --host=unix:///var/run/docker.sock --host=tcp://0.0.0.0:2376 &
-sleep 10
+
+# Function to test Docker storage driver
+test_docker_storage() {
+    local driver=$1
+    local opts=$2
+    echo "Testing storage driver: $driver"
+    
+    # Kill any existing dockerd
+    sudo pkill dockerd 2>/dev/null || true
+    sleep 2
+    
+    # Try to start with the specified driver
+    if [ -n "$opts" ]; then
+        sudo dockerd --host=unix:///var/run/docker.sock --storage-driver=$driver $opts &
+    else
+        sudo dockerd --host=unix:///var/run/docker.sock --storage-driver=$driver &
+    fi
+    
+    local dockerd_pid=$!
+    sleep 5
+    
+    # Check if Docker started successfully
+    if docker info >/dev/null 2>&1; then
+        echo "Successfully started Docker with $driver storage driver"
+        return 0
+    else
+        echo "Failed to start Docker with $driver storage driver"
+        sudo kill $dockerd_pid 2>/dev/null || true
+        return 1
+    fi
+}
+
+# Try different storage drivers in order of preference
+if ! test_docker_storage "overlay2" "--storage-opt=overlay2.override_kernel_check=true"; then
+    if ! test_docker_storage "fuse-overlayfs" ""; then
+        echo "Falling back to vfs storage driver (slower performance)"
+        test_docker_storage "vfs" ""
+    fi
+fi
+
+sleep 5
 
 # Wait for Docker daemon to be ready
 echo "Waiting for Docker daemon to start..."
