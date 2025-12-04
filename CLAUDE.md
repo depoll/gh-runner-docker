@@ -4,20 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This repository provides a Docker-based solution for running multiple GitHub Actions self-hosted runners using Docker Compose with replicas. The setup is platform-agnostic, supporting both x64 and arm64 architectures.
+This repository provides a Docker-based solution for running GitHub Actions self-hosted runners. It supports two modes:
+
+1. **Static Pool Mode**: Fixed number of long-running runners using Docker Compose replicas
+2. **Autoscaling Mode**: Webhook-driven ephemeral runners that scale based on demand
 
 ## Architecture
 
-- **Dockerfile**: Multi-architecture GitHub Actions runner container
-- **entrypoint.sh**: Handles runner configuration, naming, and lifecycle
-- **docker-compose.yml**: Orchestrates multiple runner instances with replicas
-- **.env.example**: Template for environment configuration
+### Core Files
+
+- **Dockerfile**: Multi-architecture runner container (static pool mode)
+- **Dockerfile.ephemeral**: Ephemeral runner for autoscaling mode
+- **entrypoint.sh**: Handles runner configuration and lifecycle (static mode)
+- **ephemeral-entrypoint.sh**: Single-job runner lifecycle (autoscaling mode)
+- **docker-compose.yml**: Static pool orchestration
+- **docker-compose.autoscale.yml**: Autoscaling controller setup
+
+### Controller (Autoscaling)
+
+- **controller/webhook_server.py**: Python webhook server that handles `workflow_job` events
+- **controller/Dockerfile**: Controller container image
+- **controller/requirements.txt**: Python dependencies
 
 ## Build and Run Commands
 
-### Using pre-built image from GitHub Container Registry:
+### Static Pool Mode (Original)
+
 ```bash
-# Edit docker-compose.yml to use: image: ghcr.io/your-username/gh-runner-docker:latest
 # Copy environment template and configure
 cp .env.example .env
 # Edit .env with your GitHub URL, token, and desired replica count
@@ -29,35 +42,123 @@ docker-compose up -d
 docker-compose up -d --scale gh-runner=5
 ```
 
-### Build locally:
-```bash
-# Keep build: . in docker-compose.yml
-docker-compose build
+### Autoscaling Mode
 
-# Start runners
-docker-compose up -d
+```bash
+# Copy environment template and configure
+cp .env.example .env
+# Edit .env with GITHUB_URL, GITHUB_TOKEN, WEBHOOK_SECRET, MAX_RUNNERS
+
+# Build ephemeral runner image
+docker build -t ghcr.io/depoll/gh-runner-docker:ephemeral -f Dockerfile.ephemeral .
+
+# Build and start controller
+docker-compose -f docker-compose.autoscale.yml up -d --build
+
+# View controller logs
+docker-compose -f docker-compose.autoscale.yml logs -f controller
+
+# Check health
+curl http://localhost:8080/health
 ```
 
-### Configuration
+### Building Images Locally
 
-Required environment variables:
+```bash
+# Static pool runner
+docker build -t gh-runner:latest .
+
+# Ephemeral runner
+docker build -t gh-runner:ephemeral -f Dockerfile.ephemeral .
+
+# Controller
+docker build -t gh-runner-controller:latest ./controller
+```
+
+## Configuration
+
+### Required Variables
+
 - `GITHUB_URL`: Repository or organization URL
-- `GITHUB_TOKEN`: GitHub personal access token (PAT) or registration token. If a PAT is provided, it will be automatically exchanged for a registration token using the GitHub API
+- `GITHUB_TOKEN`: GitHub PAT (auto-exchanges for registration token if PAT detected)
 
-Optional environment variables:
+### Autoscaling-Specific Variables
+
+- `WEBHOOK_HOST`: Public URL for auto-registering webhook with GitHub (e.g., `https://your-server.com`)
+- `WEBHOOK_SECRET`: Manual webhook secret (auto-generated if not set)
+- `MAX_RUNNERS`: Maximum concurrent ephemeral runners (default: 10)
+- `RUNNER_IMAGE`: Docker image for ephemeral runners
+
+### Webhook Setup Options
+
+1. **Auto-registration** (recommended): Set `WEBHOOK_HOST` to your public URL. Controller registers webhook automatically.
+   - Requires: `admin:repo_hook` (repo) or `admin:org_hook` (org) scope
+   - Secret is auto-generated and persisted to `/data/webhook_secret`
+
+2. **Manual setup**: Set `WEBHOOK_SECRET` and configure webhook in GitHub settings.
+
+### Common Variables
+
 - `RUNNER_NAME_PREFIX`: Prefix for runner names (default: "runner")
 - `RUNNER_WORKDIR`: Working directory (default: "_work")
-- `RUNNER_LABELS`: Comma-separated labels
+- `RUNNER_LABELS`: Comma-separated labels (default: "self-hosted,linux")
 - `RUNNER_GROUP`: Runner group (default: "default")
-- `REPLICAS`: Number of runner instances (default: 3)
+- `REPLICAS`: Number of static runner instances (default: 3)
+
+## Webhook Event Flow (Autoscaling)
+
+0. On startup, controller optionally auto-registers webhook with GitHub API (if `WEBHOOK_HOST` set)
+1. GitHub sends `workflow_job` webhook with `action: queued`
+2. Controller verifies signature and checks labels
+3. Controller spawns ephemeral runner container with `--ephemeral` flag
+4. Runner registers with GitHub and picks up job
+5. Runner completes job and auto-deregisters
+6. Container exits and is removed
+7. GitHub sends `workflow_job` with `action: completed`
+8. Controller cleans up any remaining container state
 
 ## Runner Naming
 
-Each runner gets a unique name based on its instance number: `{RUNNER_NAME_PREFIX}-{instance_number}` (e.g., runner-1, runner-2, etc.)
+- **Static mode**: `{RUNNER_NAME_PREFIX}-{container_id}` (e.g., runner-abc1)
+- **Autoscaling mode**: `ephemeral-runner-{job_id}-{uuid}` (e.g., ephemeral-runner-12345-abc12345)
 
 ## Container Registry
 
-The GitHub Action automatically builds and publishes multi-architecture (amd64/arm64) images to GitHub Container Registry on:
-- Push to main branch (tagged as `latest`)
-- Tagged releases (tagged with version numbers)
-- Pull requests (for testing, not published)
+The GitHub Action builds and publishes multi-architecture images to GHCR:
+- `ghcr.io/depoll/gh-runner-docker:latest` - Static pool runner
+- `ghcr.io/depoll/gh-runner-docker:ephemeral` - Ephemeral runner
+- `ghcr.io/depoll/gh-runner-controller:latest` - Webhook controller
+
+## Key Implementation Details
+
+### Ephemeral Runner Flags
+
+The ephemeral runner uses these important flags:
+- `--ephemeral`: Runner auto-deregisters after one job
+- `--disableupdate`: Prevents auto-updates (image controls version)
+- `--replace`: Replaces existing runner with same name
+
+### Webhook Signature Verification
+
+The controller verifies webhooks using HMAC-SHA256:
+```python
+expected = 'sha256=' + hmac.new(
+    WEBHOOK_SECRET.encode(),
+    payload,
+    hashlib.sha256
+).hexdigest()
+```
+
+### Webhook Auto-Registration
+
+The controller can auto-register webhooks via GitHub API:
+1. `load_or_generate_secret()`: Checks env → persisted file → generates new
+2. `register_webhook()`: Creates/updates webhook via GitHub REST API
+3. Secret persisted to `/data/webhook_secret` for container restarts
+
+### Health Check Endpoint
+
+Controller provides `/health` endpoint returning:
+- Active runner count and details
+- Max runners configuration
+- Runner status and job IDs

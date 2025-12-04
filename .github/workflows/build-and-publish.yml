@@ -49,7 +49,7 @@ jobs:
           echo "runner_version=$RUNNER_VERSION" >> $GITHUB_OUTPUT
           echo "Using runner version: $RUNNER_VERSION"
 
-      - name: Extract metadata
+      - name: Extract metadata (static runner)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -60,7 +60,7 @@ jobs:
             type=raw,value=${{ steps.get-version.outputs.runner_version }},enable={{is_default_branch}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push Docker image
+      - name: Build and push static runner image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -72,3 +72,46 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             RUNNER_VERSION=${{ steps.get-version.outputs.runner_version }}
+
+      - name: Extract metadata (ephemeral runner)
+        id: meta-ephemeral
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=ephemeral,enable={{is_default_branch}}
+            type=raw,value=ephemeral-${{ steps.get-version.outputs.runner_version }},enable={{is_default_branch}}
+
+      - name: Build and push ephemeral runner image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.ephemeral
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' && (github.event_name != 'pull_request_target' || github.event.pull_request.merged == true) }}
+          tags: ${{ steps.meta-ephemeral.outputs.tags }}
+          labels: ${{ steps.meta-ephemeral.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            RUNNER_VERSION=${{ steps.get-version.outputs.runner_version }}
+
+      - name: Extract metadata (controller)
+        id: meta-controller
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/depoll/gh-runner-controller
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+
+      - name: Build and push controller image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./controller
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' && (github.event_name != 'pull_request_target' || github.event.pull_request.merged == true) }}
+          tags: ${{ steps.meta-controller.outputs.tags }}
+          labels: ${{ steps.meta-controller.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

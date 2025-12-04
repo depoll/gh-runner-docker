@@ -1,0 +1,77 @@
+# GitHub Actions Autoscaling Ephemeral Runners
+#
+# This docker-compose setup provides webhook-based autoscaling for GitHub Actions
+# self-hosted runners. When a workflow job is queued, the controller automatically
+# spawns an ephemeral runner container to handle it.
+#
+# Architecture:
+# - controller: Webhook server that receives workflow_job events from GitHub
+# - Ephemeral runners are spawned on-demand by the controller
+#
+# Usage:
+#   docker-compose -f docker-compose.autoscale.yml up -d
+
+services:
+  controller:
+    build:
+      context: ./controller
+      dockerfile: Dockerfile
+    image: ghcr.io/depoll/gh-runner-controller:latest
+    ports:
+      - "${WEBHOOK_PORT:-8080}:8080"
+    environment:
+      # Required: GitHub repository or organization URL
+      GITHUB_URL: ${GITHUB_URL}
+      # Required: GitHub personal access token with repo/admin:org scope
+      # For auto-registration, also needs admin:repo_hook or admin:org_hook
+      GITHUB_ACCESS_TOKEN: ${GITHUB_TOKEN}
+      # Option A: Auto-register webhook (set public URL, secret auto-generated)
+      WEBHOOK_HOST: ${WEBHOOK_HOST:-}
+      # Option B: Manual webhook (set secret, leave WEBHOOK_HOST empty)
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      # Optional: Labels for runners (comma-separated)
+      RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,linux}
+      # Optional: Maximum concurrent runners
+      MAX_RUNNERS: ${MAX_RUNNERS:-10}
+      # Optional: Runner image to use
+      RUNNER_IMAGE: ${RUNNER_IMAGE:-ghcr.io/depoll/gh-runner-docker:ephemeral}
+      # Optional: Docker network for runners
+      DOCKER_NETWORK: ${DOCKER_NETWORK:-gh-runner-network}
+    volumes:
+      # Mount Docker socket to spawn runner containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persist webhook secret across restarts
+      - controller-data:/data
+    networks:
+      - gh-runner-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # Optional: Watchtower for auto-updates
+  watchtower:
+    image: containrrr/watchtower:latest
+    environment:
+      WATCHTOWER_POLL_INTERVAL: 3600
+      WATCHTOWER_LABEL_ENABLE: true
+      WATCHTOWER_CLEANUP: true
+      WATCHTOWER_INCLUDE_STOPPED: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - gh-runner-network
+    restart: unless-stopped
+
+networks:
+  gh-runner-network:
+    driver: bridge
+    name: gh-runner-network
+
+volumes:
+  controller-data:
