@@ -16,6 +16,33 @@ A scalable Docker-based solution for running GitHub Actions self-hosted runners.
 
 ## Quick Start
 
+### Autoscaling Mode - No Clone Required (Recommended)
+
+The fastest way to get started - just download one file:
+
+```bash
+# Download the standalone compose file
+curl -O https://raw.githubusercontent.com/depoll/gh-runner-docker/main/docker-compose.standalone.yml
+
+# Create your .env file
+cat > .env << 'EOF'
+GITHUB_URL=https://github.com/your-org/your-repo
+GITHUB_TOKEN=ghp_your_token_here
+WEBHOOK_DOMAIN=webhook.example.com
+LETSENCRYPT_EMAIL=admin@example.com
+WEBHOOK_HOST=https://webhook.example.com
+MAX_RUNNERS=10
+EOF
+
+# Start the stack
+docker compose -f docker-compose.standalone.yml up -d
+```
+
+That's it! The stack will:
+- Obtain Let's Encrypt certificates automatically
+- Register the webhook with GitHub automatically  
+- Spawn ephemeral runners when jobs are queued
+
 ### Static Pool Mode (Simple)
 
 1. **Clone and configure:**
@@ -37,7 +64,7 @@ A scalable Docker-based solution for running GitHub Actions self-hosted runners.
    docker-compose up -d
    ```
 
-### Autoscaling Mode (Recommended for Production)
+### Autoscaling Mode (From Source)
 
 1. **Clone and configure:**
    ```bash
@@ -52,42 +79,32 @@ A scalable Docker-based solution for running GitHub Actions self-hosted runners.
    GITHUB_TOKEN=your_github_token_here
    MAX_RUNNERS=10
    
-   # Option A: Auto-register webhook (recommended)
-   WEBHOOK_HOST=https://your-public-server.com
+   # HTTPS with automatic Let's Encrypt (recommended)
+   WEBHOOK_DOMAIN=webhook.example.com
+   LETSENCRYPT_EMAIL=admin@example.com
    
-   # Option B: Manual webhook configuration
-   # WEBHOOK_SECRET=$(openssl rand -hex 20)
+   # Auto-register webhook with GitHub
+   WEBHOOK_HOST=https://webhook.example.com
    ```
 
-3. **Build and run the controller:**
+3. **Start the stack:**
    ```bash
-   # Build the ephemeral runner image
-   docker build -t ghcr.io/depoll/gh-runner-docker:ephemeral -f Dockerfile.ephemeral .
-   
-   # Start the autoscaling controller
    docker-compose -f docker-compose.autoscale.yml up -d
    ```
-
-4. **Webhook Setup** (choose one):
-
-   **Option A: Automatic Registration (Recommended)**
    
-   Set `WEBHOOK_HOST` to your server's public URL. The controller will:
-   - Generate a secure webhook secret automatically
-   - Register the webhook with GitHub
-   - Persist the secret to survive restarts
-   
-   Required token scope: `admin:repo_hook` (repo) or `admin:org_hook` (org)
+   That's it! The stack will:
+   - Start nginx with automatic Let's Encrypt certificate via native ACME
+   - Start the webhook controller
+   - Auto-register the webhook with GitHub (if `WEBHOOK_HOST` is set)
 
-   **Option B: Manual Configuration**
+4. **Verify it's working:**
+   ```bash
+   # Check health endpoint
+   curl https://webhook.example.com/health
    
-   If you prefer manual setup or can't grant webhook admin permissions:
-   - Set `WEBHOOK_SECRET` in your `.env` file
-   - Go to repository/organization Settings → Webhooks → Add webhook
-   - **Payload URL**: `http://your-server:8080/webhook`
-   - **Content type**: `application/json`
-   - **Secret**: Use the same value as `WEBHOOK_SECRET`
-   - **Events**: Select "Let me select individual events" → Check only "Workflow jobs"
+   # View logs
+   docker-compose -f docker-compose.autoscale.yml logs -f
+   ```
 
 ## Architecture
 
@@ -108,13 +125,19 @@ A scalable Docker-based solution for running GitHub Actions self-hosted runners.
 ```
                           GitHub
                             │
-                            │ workflow_job webhook
+                            │ workflow_job webhook (HTTPS)
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    Docker Host                              │
 │  ┌──────────────────────────────────────────────────────┐  │
+│  │                   nginx (ports 80/443)                 │  │
+│  │          Auto Let's Encrypt via native ACME            │  │
+│  └──────────────────────────────────────────────────────┘  │
+│         │                                                   │
+│         ▼                                                   │
+│  ┌──────────────────────────────────────────────────────┐  │
 │  │              Webhook Controller                       │  │
-│  │         (listens on port 8080)                       │  │
+│  │            (internal port 8080)                       │  │
 │  └──────────────────────────────────────────────────────┘  │
 │         │                                                   │
 │         │ spawns on "queued" event                         │
@@ -134,9 +157,10 @@ A scalable Docker-based solution for running GitHub Actions self-hosted runners.
 |----------|----------|---------|-------------|
 | `GITHUB_URL` | Yes | - | Repository or organization URL |
 | `GITHUB_TOKEN` | Yes | - | GitHub PAT with appropriate scopes |
-| `WEBHOOK_HOST` | No | - | Public URL for auto-registering webhook (e.g., `https://your-server.com`) |
+| `WEBHOOK_DOMAIN` | HTTPS | - | Domain for Let's Encrypt certificate |
+| `LETSENCRYPT_EMAIL` | HTTPS | - | Email for certificate notifications |
+| `WEBHOOK_HOST` | No | - | Public URL for auto-registering webhook |
 | `WEBHOOK_SECRET` | No | Auto-generated | Webhook secret; auto-generated if not provided |
-| `WEBHOOK_PORT` | No | `8080` | Port for webhook server |
 | `MAX_RUNNERS` | No | `10` | Max concurrent ephemeral runners |
 | `RUNNER_LABELS` | No | `self-hosted,linux` | Comma-separated runner labels |
 | `RUNNER_GROUP` | No | `default` | Runner group name |
@@ -179,9 +203,14 @@ jobs:
 
 Images are automatically built and published to GitHub Container Registry:
 
-- `ghcr.io/depoll/gh-runner-docker:latest` - Static pool runner
-- `ghcr.io/depoll/gh-runner-docker:ephemeral` - Ephemeral runner for autoscaling
-- `ghcr.io/depoll/gh-runner-controller:latest` - Webhook controller
+| Image | Description |
+|-------|-------------|
+| `ghcr.io/depoll/gh-runner-docker:latest` | Static pool runner |
+| `ghcr.io/depoll/gh-runner-docker:ephemeral` | Ephemeral runner for autoscaling |
+| `ghcr.io/depoll/gh-runner-controller:latest` | Webhook controller |
+| `ghcr.io/depoll/gh-runner-nginx:latest` | nginx with native ACME for Let's Encrypt |
+
+All images are multi-architecture (amd64 and arm64).
 
 ## Monitoring
 

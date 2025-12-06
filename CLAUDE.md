@@ -26,6 +26,13 @@ This repository provides a Docker-based solution for running GitHub Actions self
 - **controller/Dockerfile**: Controller container image
 - **controller/requirements.txt**: Python dependencies
 
+### nginx (HTTPS Proxy)
+
+- **nginx/nginx.conf**: Main config with native ACME for automatic Let's Encrypt
+- **nginx/nginx-init.conf**: HTTP-only config for development/testing
+- **nginx/Dockerfile**: nginx image with ACME module support
+- **nginx/docker-entrypoint.sh**: Selects config based on environment
+
 ## Build and Run Commands
 
 ### Static Pool Mode (Original)
@@ -47,16 +54,16 @@ docker-compose up -d --scale gh-runner=5
 ```bash
 # Copy environment template and configure
 cp .env.example .env
-# Edit .env with GITHUB_URL, GITHUB_TOKEN, WEBHOOK_SECRET, MAX_RUNNERS
+# Edit .env with:
+#   GITHUB_URL, GITHUB_TOKEN, MAX_RUNNERS
+#   WEBHOOK_DOMAIN, LETSENCRYPT_EMAIL (for HTTPS)
+#   WEBHOOK_HOST (for auto-registering webhook)
 
-# Build ephemeral runner image
-docker build -t ghcr.io/depoll/gh-runner-docker:ephemeral -f Dockerfile.ephemeral .
+# Start the full stack (nginx + controller)
+docker-compose -f docker-compose.autoscale.yml up -d
 
-# Build and start controller
-docker-compose -f docker-compose.autoscale.yml up -d --build
-
-# View controller logs
-docker-compose -f docker-compose.autoscale.yml logs -f controller
+# View logs
+docker-compose -f docker-compose.autoscale.yml logs -f
 
 # Check health
 curl http://localhost:8080/health
