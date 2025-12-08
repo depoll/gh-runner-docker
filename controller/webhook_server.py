@@ -29,6 +29,7 @@ import http.server
 import json
 import logging
 import os
+import platform
 import secrets
 import subprocess
 import threading
@@ -330,16 +331,49 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
     
     # Generate unique runner name
     runner_name = f"ephemeral-{job_id}-{int(time.time())}"
+
+    # Determine architecture and platform
+    platform_args = []
+    
+    # Detect host architecture
+    host_machine = platform.machine().lower()
+    is_host_arm = host_machine in ('aarch64', 'arm64')
+    
+    # Default to host architecture
+    if is_host_arm:
+        arch_label = 'arm64'
+    else:
+        arch_label = 'x64'
+        
+    # Check requested labels for architecture override
+    normalized_labels = [l.lower() for l in labels]
+    
+    if 'arm64' in normalized_labels:
+        arch_label = 'arm64'
+        if not is_host_arm:
+            platform_args = ['--platform', 'linux/arm64']
+            logger.info(f"Job {job_id} requested arm64 on {host_machine} host, using emulation")
+    elif 'x64' in normalized_labels or 'amd64' in normalized_labels:
+        arch_label = 'x64'
+        if is_host_arm:
+            platform_args = ['--platform', 'linux/amd64']
+            logger.info(f"Job {job_id} requested amd64/x64 on {host_machine} host, using emulation")
+    
+    # Adjust RUNNER_LABELS to match architecture
+    # Remove any existing arch labels from the configured defaults
+    base_labels = [l for l in RUNNER_LABELS.split(',') if l.lower() not in ('x64', 'amd64', 'arm64')]
+    runner_labels = ','.join(base_labels + [arch_label])
     
     # Build docker command
     cmd = [
         'docker', 'run', '-d',
         '--name', runner_name,
         '--rm',  # Auto-remove when stopped
+    ] + platform_args + [
         '-e', f'GITHUB_URL={GITHUB_URL}',
         '-e', f'RUNNER_TOKEN={token}',
         '-e', f'RUNNER_NAME={runner_name}',
-        '-e', f'RUNNER_LABELS={RUNNER_LABELS}',
+        '-e', f'RUNNER_LABELS={runner_labels}',
         '-v', '/var/run/docker.sock:/var/run/docker.sock',
         RUNNER_IMAGE
     ]
