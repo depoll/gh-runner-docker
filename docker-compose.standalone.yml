@@ -56,7 +56,7 @@ services:
       RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,linux}
       MAX_RUNNERS: ${MAX_RUNNERS:-10}
       RUNNER_IMAGE: ${RUNNER_IMAGE:-ghcr.io/depoll/gh-runner-docker:ephemeral}
-      DOCKER_NETWORK: gh-runner-network
+      DOCKER_NETWORK: ${DOCKER_NETWORK:-gh-runner-network}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - controller-data:/data

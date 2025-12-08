@@ -111,7 +111,7 @@ fi
 
 # Use provided runner name or generate one
 if [ -z "$RUNNER_NAME" ]; then
-    RUNNER_NAME="ephemeral-$(hostname | tail -c 5)-$(date +%s)"
+    RUNNER_NAME="ephemeral-$(hostname | rev | cut -c1-4 | rev)-$(date +%s)"
 fi
 
 echo "Runner name: $RUNNER_NAME"
@@ -126,21 +126,27 @@ fi
 REGISTRATION_TOKEN="$GITHUB_TOKEN"
 
 # Build configuration command with --ephemeral flag
-CONFIG_CMD="./config.sh --url $GITHUB_URL --token $REGISTRATION_TOKEN --name $RUNNER_NAME --work $RUNNER_WORKDIR --ephemeral --unattended --replace --disableupdate"
+CONFIG_ARGS=(
+    "./config.sh" "--url" "$GITHUB_URL"
+    "--token" "$REGISTRATION_TOKEN"
+    "--name" "$RUNNER_NAME"
+    "--work" "$RUNNER_WORKDIR"
+    "--ephemeral" "--unattended" "--replace" "--disableupdate"
+)
 
 # Add labels if specified
 if [ -n "$RUNNER_LABELS" ]; then
-    CONFIG_CMD="$CONFIG_CMD --labels $RUNNER_LABELS"
+    CONFIG_ARGS+=("--labels" "$RUNNER_LABELS")
 fi
 
 # Add runner group if specified
 if [ -n "$RUNNER_GROUP" ]; then
-    CONFIG_CMD="$CONFIG_CMD --runnergroup $RUNNER_GROUP"
+    CONFIG_ARGS+=("--runnergroup" "$RUNNER_GROUP")
 fi
 
 # Configure the runner
 echo "=== Configuring Ephemeral Runner ==="
-eval $CONFIG_CMD
+"${CONFIG_ARGS[@]}"
 
 # Set post-job hook for workspace cleanup
 export ACTIONS_RUNNER_HOOK_JOB_COMPLETED="/home/runner/cleanup-workspace.sh"

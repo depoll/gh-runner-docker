@@ -16,7 +16,7 @@ Environment Variables:
   GITHUB_ACCESS_TOKEN - PAT with repo/admin:org and admin:repo_hook/admin:org_hook scopes
   WEBHOOK_SECRET     - (Optional) Manual webhook secret; auto-generated if not provided
   WEBHOOK_HOST       - (Required for auto-registration) Public URL where this server is reachable
-  RUNNER_IMAGE       - Docker image for ephemeral runners (default: ghcr.io/yourorg/gh-runner:ephemeral)
+  RUNNER_IMAGE       - Docker image for ephemeral runners (default: ghcr.io/depoll/gh-runner-docker:ephemeral)
   RUNNER_LABELS      - Comma-separated labels for runners (default: self-hosted,linux,x64,ephemeral)
   REQUIRED_LABELS    - Only spawn runners for jobs requesting these labels (optional)
   MAX_RUNNERS        - Maximum concurrent runners (default: 10)
@@ -50,8 +50,8 @@ GITHUB_URL = os.environ.get('GITHUB_URL', '')
 GITHUB_ACCESS_TOKEN = os.environ.get('GITHUB_ACCESS_TOKEN', '')
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', '')
 WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '')
-RUNNER_IMAGE = os.environ.get('RUNNER_IMAGE', 'ghcr.io/yourorg/gh-runner:ephemeral')
-RUNNER_LABELS = os.environ.get('RUNNER_LABELS', 'self-hosted,linux,x64,ephemeral')
+RUNNER_IMAGE = os.environ.get('RUNNER_IMAGE', 'ghcr.io/depoll/gh-runner-docker:ephemeral')
+RUNNER_LABELS = os.environ.get('RUNNER_LABELS', 'self-hosted,linux')
 REQUIRED_LABELS = os.environ.get('REQUIRED_LABELS', '')
 MAX_RUNNERS = int(os.environ.get('MAX_RUNNERS', '10'))
 PORT = int(os.environ.get('PORT', '8080'))
@@ -135,9 +135,10 @@ def github_api_request(endpoint: str, method: str = 'GET', data: dict = None) ->
                             logger.error("      - Fine-grained PAT: Enable 'Administration' (Read and write)")
                             logger.error("      - Classic PAT: Enable 'repo' (private) or 'public_repo' (public)")
                 except json.JSONDecodeError:
+                    # The error body is not valid JSON; safe to ignore in this context.
                     pass
-            except Exception:
-                pass
+            except Exception as inner_exc:
+                logger.error(f"Failed to read or decode error body: {inner_exc}")
         return None
     except Exception as e:
         logger.error(f"GitHub API request failed: {e}")
@@ -371,7 +372,7 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         '--rm',  # Auto-remove when stopped
     ] + platform_args + [
         '-e', f'GITHUB_URL={GITHUB_URL}',
-        '-e', f'RUNNER_TOKEN={token}',
+        '-e', f'GITHUB_TOKEN={token}',
         '-e', f'RUNNER_NAME={runner_name}',
         '-e', f'RUNNER_LABELS={runner_labels}',
         '-v', '/var/run/docker.sock:/var/run/docker.sock',

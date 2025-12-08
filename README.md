@@ -227,15 +227,7 @@ Response:
 {
   "status": "healthy",
   "active_runners": 2,
-  "max_runners": 10,
-  "runners": [
-    {
-      "job_id": 12345,
-      "runner_name": "ephemeral-runner-12345-abc123",
-      "status": "running",
-      "started_at": "2024-01-15T10:30:00"
-    }
-  ]
+  "max_runners": 10
 }
 ```
 
