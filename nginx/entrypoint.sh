@@ -6,7 +6,7 @@ set -e
 
 if [ -n "$WEBHOOK_DOMAIN" ] && [ -n "$LETSENCRYPT_EMAIL" ]; then
     echo "HTTPS mode: Using ACME config for $WEBHOOK_DOMAIN"
-    export NGINX_ENVSUBST_TEMPLATE_SUFFIX=".conf.template"
+    export NGINX_ENVSUBST_TEMPLATE_SUFFIX=".template"
     # Remove HTTP-only template so it's not processed
     rm -f /etc/nginx/templates/default-http.conf.template 2>/dev/null || true
 else
