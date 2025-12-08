@@ -14,6 +14,9 @@ RUN apk add --no-cache \
     curl \
     nginx-module-acme --repository=https://nginx.org/packages/mainline/alpine/v3.22/main/
 
+# Enable the ACME module in the main nginx.conf
+RUN sed -i '1i load_module modules/ngx_http_acme_module.so;' /etc/nginx/nginx.conf
+
 # Create ACME state directory with secure permissions
 RUN mkdir -p /etc/nginx/acme && chmod 700 /etc/nginx/acme
 
