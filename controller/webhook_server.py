@@ -124,6 +124,17 @@ def github_api_request(endpoint: str, method: str = 'GET', data: dict = None) ->
             try:
                 error_body = e.read().decode('utf-8')
                 logger.error(f"Error details: {error_body}")
+                
+                # Attempt to parse JSON for better hints
+                try:
+                    error_json = json.loads(error_body)
+                    if error_json.get('message') == 'Resource not accessible by personal access token':
+                        if 'registration-token' in url:
+                            logger.error("HINT: Missing permissions to create runner registration token.")
+                            logger.error("      - Fine-grained PAT: Enable 'Administration' (Read and write)")
+                            logger.error("      - Classic PAT: Enable 'repo' (private) or 'public_repo' (public)")
+                except json.JSONDecodeError:
+                    pass
             except Exception:
                 pass
         return None
