@@ -8,9 +8,7 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy and install requirements
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Note: This server uses only Python standard library modules (no external dependencies)
 
 # Copy application
 COPY webhook_server.py .

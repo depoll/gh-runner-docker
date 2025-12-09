@@ -1,23 +1,23 @@
-# nginx with native ACME module for automatic Let's Encrypt certificates
+# nginx reverse proxy for webhook controller
 #
-# This image uses nginx 1.29+ with the ngx_http_acme_module for automatic
-# certificate management without needing a separate certbot container.
+# IMPORTANT: As of early 2025, nginx does not have a native ACME module in official releases.
+# This configuration is prepared for future nginx ACME support (expected in nginx 1.29+).
+# 
+# For production use TODAY, consider one of these alternatives:
+# - Use certbot in a sidecar container
+# - Use nginx-proxy with acme-companion
+# - Use Caddy (which has built-in ACME)
+# - Use an external load balancer with TLS termination
 #
-# Why a custom Dockerfile?
-# The ACME module is not included in the base nginx image and must be installed.
-# Once nginx includes it by default, this can be replaced with the official image.
+# The ACME directives in nginx.conf will work once nginx officially releases ACME support.
+# Until then, you may need to manually manage certificates or use HTTP-only mode.
 
-FROM nginx:1.29-alpine
+FROM nginx:stable-alpine
 
-# Install the ACME module from nginx's official repository
-RUN apk add --no-cache \
-    curl \
-    nginx-module-acme --repository=https://nginx.org/packages/mainline/alpine/v3.22/main/
+# Install curl for health checks
+RUN apk add --no-cache curl
 
-# Enable the ACME module in the main nginx.conf
-RUN sed -i '1i load_module modules/ngx_http_acme_module.so;' /etc/nginx/nginx.conf
-
-# Create ACME state directory with secure permissions
+# Create directory for certificates (manual or future ACME)
 RUN mkdir -p /etc/nginx/acme && chmod 700 /etc/nginx/acme
 
 # Copy nginx configuration templates

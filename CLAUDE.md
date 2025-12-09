@@ -28,10 +28,12 @@ This repository provides a Docker-based solution for running GitHub Actions self
 
 ### nginx (HTTPS Proxy)
 
-- **nginx/nginx.conf**: Main config with native ACME for automatic Let's Encrypt
+- **nginx/nginx.conf**: Main config for HTTPS (requires external certificates)
 - **nginx/nginx-init.conf**: HTTP-only config for development/testing
-- **nginx/Dockerfile**: nginx image with ACME module support
-- **nginx/docker-entrypoint.sh**: Selects config based on environment
+- **nginx/Dockerfile**: nginx reverse proxy image
+- **nginx/entrypoint.sh**: Selects config based on environment
+
+> **Note**: As of early 2025, nginx does not have native ACME support. Certificates must be provided externally (e.g., via certbot).
 
 ## Build and Run Commands
 

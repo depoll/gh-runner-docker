@@ -20,7 +20,7 @@
 #   docker compose -f docker-compose.standalone.yml up -d
 
 services:
-  # nginx reverse proxy with automatic Let's Encrypt (native ACME)
+  # nginx reverse proxy (provide certificates externally for HTTPS)
   nginx:
     image: ghcr.io/depoll/gh-runner-nginx:latest
     ports:

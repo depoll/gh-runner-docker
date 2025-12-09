@@ -9,6 +9,9 @@ set -e
 echo "=== GitHub Actions Ephemeral Runner ==="
 echo "Starting at: $(date)"
 
+# Initialize runner_pid to avoid undefined variable in cleanup trap
+runner_pid=""
+
 # Function to cleanup on exit
 cleanup() {
     local exit_code=$?

@@ -64,6 +64,7 @@ active_runners = {}
 runners_lock = threading.Lock()
 
 
+# Note: This module requires Python 3.10+ for PEP 604 union type syntax (X | Y)
 def parse_github_url(url: str) -> tuple[str, str | None]:
     """
     Parse GitHub URL to extract owner and optional repo.
@@ -315,6 +316,11 @@ def get_registration_token() -> str | None:
 
 def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
     """Spawn an ephemeral runner container for a job."""
+    # Validate job_id
+    if not isinstance(job_id, int) or job_id <= 0:
+        logger.error(f"Invalid job_id: {job_id}")
+        return False
+    
     with runners_lock:
         if len(active_runners) >= MAX_RUNNERS:
             logger.warning(f"Maximum runners ({MAX_RUNNERS}) reached, cannot spawn new runner")
@@ -323,14 +329,19 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         if job_id in active_runners:
             logger.info(f"Runner already exists for job {job_id}")
             return True
+        
+        # Get registration token inside the lock to prevent race conditions
+        token = get_registration_token()
+        if not token:
+            logger.error("Failed to get registration token")
+            return False
+        
+        # Re-check runner existence after token acquisition
+        if job_id in active_runners:
+            logger.info(f"Runner already exists for job {job_id} (after token acquisition)")
+            return True
     
-    # Get registration token
-    token = get_registration_token()
-    if not token:
-        logger.error("Failed to get registration token")
-        return False
-    
-    # Generate unique runner name
+    # Generate unique runner name (moved outside the lock since we have the token)
     runner_name = f"ephemeral-{job_id}-{int(time.time())}"
 
     # Determine architecture and platform
@@ -375,6 +386,7 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         '-e', f'GITHUB_TOKEN={token}',
         '-e', f'RUNNER_NAME={runner_name}',
         '-e', f'RUNNER_LABELS={runner_labels}',
+        '--privileged',  # Required for Docker-in-Docker
         '-v', '/var/run/docker.sock:/var/run/docker.sock',
         RUNNER_IMAGE
     ]

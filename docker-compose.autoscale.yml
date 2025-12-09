@@ -18,7 +18,7 @@
 #   docker-compose -f docker-compose.autoscale.yml up -d
 
 services:
-  # nginx reverse proxy with automatic TLS
+  # nginx reverse proxy (provide certificates externally for HTTPS)
   nginx:
     build:
       context: ./nginx
@@ -75,7 +75,9 @@ services:
       # Optional: Docker network for runners
       DOCKER_NETWORK: ${DOCKER_NETWORK:-gh-runner-network}
     volumes:
-      # Mount Docker socket to spawn runner containers
+      # SECURITY NOTE: Mounting the Docker socket gives the controller full control over
+      # the host's Docker daemon. For production, consider using a Docker socket proxy
+      # with restricted permissions (e.g., tecnativa/docker-socket-proxy).
       - /var/run/docker.sock:/var/run/docker.sock
       # Persist webhook secret across restarts
       - controller-data:/data
@@ -98,7 +100,6 @@ services:
       WATCHTOWER_POLL_INTERVAL: 3600
       WATCHTOWER_LABEL_ENABLE: true
       WATCHTOWER_CLEANUP: true
-      WATCHTOWER_INCLUDE_STOPPED: true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:

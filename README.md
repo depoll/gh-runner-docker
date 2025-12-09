@@ -39,9 +39,10 @@ docker compose -f docker-compose.standalone.yml up -d
 ```
 
 That's it! The stack will:
-- Obtain Let's Encrypt certificates automatically
 - Register the webhook with GitHub automatically  
 - Spawn ephemeral runners when jobs are queued
+
+> **Note**: For HTTPS, you'll need to provide certificates externally (e.g., via certbot). See the TLS section below.
 
 ### Static Pool Mode (Simple)
 
@@ -92,10 +93,12 @@ That's it! The stack will:
    docker-compose -f docker-compose.autoscale.yml up -d
    ```
    
-   That's it! The stack will:
-   - Start nginx with automatic Let's Encrypt certificate via native ACME
+   The stack will:
+   - Start nginx reverse proxy
    - Start the webhook controller
    - Auto-register the webhook with GitHub (if `WEBHOOK_HOST` is set)
+
+   > **For HTTPS**: You'll need to provide SSL certificates. See the HTTPS Setup section below.
 
 4. **Verify it's working:**
    ```bash
@@ -131,7 +134,7 @@ That's it! The stack will:
 │                    Docker Host                              │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │                   nginx (ports 80/443)                 │  │
-│  │          Auto Let's Encrypt via native ACME            │  │
+│  │          TLS termination (certs provided externally)   │  │
 │  └──────────────────────────────────────────────────────┘  │
 │         │                                                   │
 │         ▼                                                   │
@@ -208,7 +211,7 @@ Images are automatically built and published to GitHub Container Registry:
 | `ghcr.io/depoll/gh-runner-docker:latest` | Static pool runner |
 | `ghcr.io/depoll/gh-runner-docker:ephemeral` | Ephemeral runner for autoscaling |
 | `ghcr.io/depoll/gh-runner-controller:latest` | Webhook controller |
-| `ghcr.io/depoll/gh-runner-nginx:latest` | nginx with native ACME for Let's Encrypt |
+| `ghcr.io/depoll/gh-runner-nginx:latest` | nginx reverse proxy (bring your own certs) |
 
 All images are multi-architecture (amd64 and arm64).
 
