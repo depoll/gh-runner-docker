@@ -57,30 +57,49 @@ services:
     expose:
       - "8080"
     environment:
+      # ============================================================
+      # MULTI-REPO MODE (recommended for multiple repositories)
+      # ============================================================
+      # Path to JSON config file with repository definitions
+      # See repos.example.json for format
+      REPOS_CONFIG_FILE: ${REPOS_CONFIG_FILE:-}
+      
+      # ============================================================
+      # SINGLE-REPO MODE (backward compatible, simpler setup)
+      # ============================================================
+      # These are used only if REPOS_CONFIG_FILE is not set
       # Required: GitHub repository or organization URL
-      GITHUB_URL: ${GITHUB_URL}
+      GITHUB_URL: ${GITHUB_URL:-}
       # Required: GitHub personal access token with repo/admin:org scope
       # For auto-registration, also needs admin:repo_hook or admin:org_hook
-      GITHUB_ACCESS_TOKEN: ${GITHUB_TOKEN}
-      # Option A: Auto-register webhook (set public URL, secret auto-generated)
-      WEBHOOK_HOST: ${WEBHOOK_HOST:-}
-      # Option B: Manual webhook (set secret, leave WEBHOOK_HOST empty)
+      GITHUB_ACCESS_TOKEN: ${GITHUB_TOKEN:-}
+      # Manual webhook secret (auto-generated if not set)
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
-      # Optional: Labels for runners (comma-separated)
+      # Labels for runners (comma-separated)
       RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,linux}
-      # Optional: Maximum concurrent runners
+      # Maximum concurrent runners
       MAX_RUNNERS: ${MAX_RUNNERS:-10}
-      # Optional: Runner image to use
+      # Runner image to use
       RUNNER_IMAGE: ${RUNNER_IMAGE:-ghcr.io/depoll/gh-runner-docker:ephemeral}
-      # Optional: Docker network for runners
+      
+      # ============================================================
+      # COMMON SETTINGS (apply to both modes)
+      # ============================================================
+      # Public URL for auto-registering webhooks with GitHub
+      # Each repo gets its own webhook path: {WEBHOOK_HOST}/webhook/{repo_id}
+      WEBHOOK_HOST: ${WEBHOOK_HOST:-}
+      # Docker network for spawned runners
       DOCKER_NETWORK: ${DOCKER_NETWORK:-gh-runner-network}
     volumes:
       # SECURITY NOTE: Mounting the Docker socket gives the controller full control over
       # the host's Docker daemon. For production, consider using a Docker socket proxy
       # with restricted permissions (e.g., tecnativa/docker-socket-proxy).
       - /var/run/docker.sock:/var/run/docker.sock
-      # Persist webhook secret across restarts
+      # Persist webhook secrets across restarts
       - controller-data:/data
+      # Mount config file for multi-repo mode (create repos.json from repos.example.json)
+      # Uncomment and adjust path as needed:
+      # - ./repos.json:/config/repos.json:ro
     networks:
       - gh-runner-network
     restart: unless-stopped

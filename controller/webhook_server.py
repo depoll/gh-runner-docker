@@ -4,13 +4,18 @@ GitHub Actions Webhook Controller for Autoscaling Ephemeral Runners
 
 This server receives workflow_job webhook events from GitHub and automatically
 spawns ephemeral runner containers to handle jobs. It supports:
-- Automatic webhook registration with GitHub (generates its own secret)
+- Multiple repository configurations via JSON config file
+- Automatic webhook registration with GitHub (generates its own secret per repo)
 - Manual webhook secret configuration
 - Runner spawning on 'queued' events
 - Runner cleanup on 'completed' events
 - Label-based filtering
 
-Environment Variables:
+Configuration Methods:
+  1. Multi-repo mode: Set REPOS_CONFIG_FILE to path of JSON config file
+  2. Single-repo mode: Use environment variables (backward compatible)
+
+Environment Variables (single-repo mode):
   GITHUB_URL         - Repository (https://github.com/owner/repo) or 
                        Organization URL (https://github.com/owner)
   GITHUB_ACCESS_TOKEN - PAT with repo/admin:org and admin:repo_hook/admin:org_hook scopes
@@ -20,6 +25,11 @@ Environment Variables:
   RUNNER_LABELS      - Comma-separated labels for runners (default: self-hosted,linux,x64,ephemeral)
   REQUIRED_LABELS    - Only spawn runners for jobs requesting these labels (optional)
   MAX_RUNNERS        - Maximum concurrent runners (default: 10)
+  PORT               - Server port (default: 8080)
+
+Environment Variables (multi-repo mode):
+  REPOS_CONFIG_FILE  - Path to JSON config file (e.g., /config/repos.json)
+  WEBHOOK_HOST       - (Required for auto-registration) Public URL where this server is reachable
   PORT               - Server port (default: 8080)
 """
 
@@ -36,7 +46,9 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 # Configure logging
 logging.basicConfig(
@@ -45,27 +57,43 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration
-GITHUB_URL = os.environ.get('GITHUB_URL', '')
-GITHUB_ACCESS_TOKEN = os.environ.get('GITHUB_ACCESS_TOKEN', '')
-WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', '')
-WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '')
-RUNNER_IMAGE = os.environ.get('RUNNER_IMAGE', 'ghcr.io/depoll/gh-runner-docker:ephemeral')
-RUNNER_LABELS = os.environ.get('RUNNER_LABELS', 'self-hosted,linux')
-REQUIRED_LABELS = os.environ.get('REQUIRED_LABELS', '')
-MAX_RUNNERS = int(os.environ.get('MAX_RUNNERS', '10'))
+# Global configuration
 PORT = int(os.environ.get('PORT', '8080'))
+WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '')
+REPOS_CONFIG_FILE = os.environ.get('REPOS_CONFIG_FILE', '')
+DOCKER_NETWORK = os.environ.get('DOCKER_NETWORK', 'gh-runner-network')
 
-# Secret file path for persistence
-SECRET_FILE = Path('/data/webhook_secret')
-
-# Track active runners
-active_runners = {}
-runners_lock = threading.Lock()
+# Secret file directory for persistence
+SECRETS_DIR = Path('/data/secrets')
 
 
-# Note: This module requires Python 3.10+ for PEP 604 union type syntax (X | Y)
-def parse_github_url(url: str) -> tuple[str, str | None]:
+@dataclass
+class RepoConfig:
+    """Configuration for a single repository."""
+    id: str
+    github_url: str
+    github_token: str
+    runner_labels: str = 'self-hosted,linux'
+    required_labels: str = ''
+    max_runners: int = 10
+    runner_image: str = 'ghcr.io/depoll/gh-runner-docker:ephemeral'
+    webhook_secret: str = ''
+    
+    # Runtime state (not from config)
+    active_runners: dict = field(default_factory=dict)
+    runners_lock: threading.Lock = field(default_factory=threading.Lock)
+    
+    def __post_init__(self):
+        # dataclass default_factory handles initialization
+        pass
+
+
+# Global registry of repo configurations
+repos: dict[str, RepoConfig] = {}
+repos_lock = threading.Lock()
+
+
+def parse_github_url(url: str) -> tuple[str, Optional[str]]:
     """
     Parse GitHub URL to extract owner and optional repo.
     
@@ -86,22 +114,23 @@ def parse_github_url(url: str) -> tuple[str, str | None]:
     raise ValueError(f"Invalid GitHub URL: {url}")
 
 
-def get_api_base_url() -> str:
+def get_api_base_url(github_url: str) -> str:
     """Get the GitHub API base URL."""
-    if 'github.com' in GITHUB_URL:
+    if 'github.com' in github_url:
         return 'https://api.github.com'
     # For GitHub Enterprise, extract the base URL
-    parts = GITHUB_URL.split('/')
+    parts = github_url.split('/')
     return f"{parts[0]}//{parts[2]}/api/v3"
 
 
-def github_api_request(endpoint: str, method: str = 'GET', data: dict = None) -> dict | None:
+def github_api_request(github_url: str, github_token: str, endpoint: str, 
+                       method: str = 'GET', data: dict = None) -> Optional[dict]:
     """Make an authenticated request to the GitHub API."""
-    api_base = get_api_base_url()
+    api_base = get_api_base_url(github_url)
     url = f"{api_base}{endpoint}"
     
     headers = {
-        'Authorization': f'token {GITHUB_ACCESS_TOKEN}',
+        'Authorization': f'token {github_token}',
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': 'gh-runner-controller'
     }
@@ -127,7 +156,6 @@ def github_api_request(endpoint: str, method: str = 'GET', data: dict = None) ->
                 error_body = e.read().decode('utf-8')
                 logger.error(f"Error details: {error_body}")
                 
-                # Attempt to parse JSON for better hints
                 try:
                     error_json = json.loads(error_body)
                     if error_json.get('message') == 'Resource not accessible by personal access token':
@@ -136,7 +164,6 @@ def github_api_request(endpoint: str, method: str = 'GET', data: dict = None) ->
                             logger.error("      - Fine-grained PAT: Enable 'Administration' (Read and write)")
                             logger.error("      - Classic PAT: Enable 'repo' (private) or 'public_repo' (public)")
                 except json.JSONDecodeError:
-                    # The error body is not valid JSON; safe to ignore in this context.
                     pass
             except Exception as inner_exc:
                 logger.error(f"Failed to read or decode error body: {inner_exc}")
@@ -148,53 +175,50 @@ def github_api_request(endpoint: str, method: str = 'GET', data: dict = None) ->
     return None
 
 
-def load_or_generate_secret() -> str:
+def load_or_generate_secret(repo_id: str, env_secret: str = '') -> str:
     """
     Load webhook secret from file, environment, or generate a new one.
     
     Priority:
-    1. Environment variable WEBHOOK_SECRET
-    2. Persisted secret in /data/webhook_secret
+    1. Provided secret (from config or environment)
+    2. Persisted secret in /data/secrets/{repo_id}
     3. Generate new secret and persist it
     """
-    global WEBHOOK_SECRET
-    
-    # Check environment first
-    if WEBHOOK_SECRET:
-        logger.info("Using webhook secret from environment variable")
-        return WEBHOOK_SECRET
+    # Check provided secret first
+    if env_secret:
+        logger.info(f"[{repo_id}] Using webhook secret from configuration")
+        return env_secret
     
     # Check persisted file
-    if SECRET_FILE.exists():
+    secret_file = SECRETS_DIR / repo_id
+    if secret_file.exists():
         try:
-            secret = SECRET_FILE.read_text().strip()
+            secret = secret_file.read_text().strip()
             if secret:
-                logger.info("Loaded webhook secret from persisted file")
-                WEBHOOK_SECRET = secret
+                logger.info(f"[{repo_id}] Loaded webhook secret from persisted file")
                 return secret
         except Exception as e:
-            logger.warning(f"Failed to read persisted secret: {e}")
+            logger.warning(f"[{repo_id}] Failed to read persisted secret: {e}")
     
     # Generate new secret
     secret = secrets.token_hex(32)
-    logger.info("Generated new webhook secret")
+    logger.info(f"[{repo_id}] Generated new webhook secret")
     
     # Try to persist it
     try:
-        SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SECRET_FILE.write_text(secret)
-        SECRET_FILE.chmod(0o600)
-        logger.info(f"Persisted webhook secret to {SECRET_FILE}")
+        SECRETS_DIR.mkdir(parents=True, exist_ok=True)
+        secret_file.write_text(secret)
+        secret_file.chmod(0o600)
+        logger.info(f"[{repo_id}] Persisted webhook secret to {secret_file}")
     except Exception as e:
-        logger.warning(f"Failed to persist webhook secret: {e}")
+        logger.warning(f"[{repo_id}] Failed to persist webhook secret: {e}")
     
-    WEBHOOK_SECRET = secret
     return secret
 
 
-def get_webhook_endpoint() -> str:
-    """Get the appropriate webhook API endpoint based on GITHUB_URL."""
-    owner, repo = parse_github_url(GITHUB_URL)
+def get_webhook_endpoint(github_url: str) -> str:
+    """Get the appropriate webhook API endpoint based on GitHub URL."""
+    owner, repo = parse_github_url(github_url)
     
     if repo:
         return f"/repos/{owner}/{repo}/hooks"
@@ -202,10 +226,10 @@ def get_webhook_endpoint() -> str:
         return f"/orgs/{owner}/hooks"
 
 
-def get_existing_webhook(webhook_url: str) -> dict | None:
+def get_existing_webhook(repo: RepoConfig, webhook_url: str) -> Optional[dict]:
     """Check if a webhook already exists for our URL."""
-    endpoint = get_webhook_endpoint()
-    webhooks = github_api_request(endpoint)
+    endpoint = get_webhook_endpoint(repo.github_url)
+    webhooks = github_api_request(repo.github_url, repo.github_token, endpoint)
     
     if not webhooks:
         return None
@@ -218,65 +242,68 @@ def get_existing_webhook(webhook_url: str) -> dict | None:
     return None
 
 
-def register_webhook(secret: str) -> bool:
+def register_webhook(repo: RepoConfig) -> bool:
     """
-    Register or update webhook with GitHub.
+    Register or update webhook with GitHub for a specific repo.
     
     Returns True if successful, False otherwise.
     """
     if not WEBHOOK_HOST:
-        logger.info("WEBHOOK_HOST not set, skipping auto-registration")
+        logger.info(f"[{repo.id}] WEBHOOK_HOST not set, skipping auto-registration")
         return True
     
-    webhook_url = f"{WEBHOOK_HOST.rstrip('/')}/webhook"
-    logger.info(f"Checking webhook registration for {webhook_url}")
+    # Each repo gets its own webhook path
+    webhook_url = f"{WEBHOOK_HOST.rstrip('/')}/webhook/{repo.id}"
+    logger.info(f"[{repo.id}] Checking webhook registration for {webhook_url}")
     
     # Check for existing webhook
-    existing = get_existing_webhook(webhook_url)
+    existing = get_existing_webhook(repo, webhook_url)
     
     webhook_config = {
         'url': webhook_url,
         'content_type': 'json',
-        'secret': secret,
+        'secret': repo.webhook_secret,
         'insecure_ssl': '0'
     }
     
     if existing:
         # Update existing webhook
-        endpoint = f"{get_webhook_endpoint()}/{existing['id']}"
+        endpoint = f"{get_webhook_endpoint(repo.github_url)}/{existing['id']}"
         data = {
             'config': webhook_config,
             'events': ['workflow_job'],
             'active': True
         }
-        result = github_api_request(endpoint, method='PATCH', data=data)
+        result = github_api_request(repo.github_url, repo.github_token, endpoint, 
+                                    method='PATCH', data=data)
         if result:
-            logger.info(f"Updated existing webhook (ID: {existing['id']})")
+            logger.info(f"[{repo.id}] Updated existing webhook (ID: {existing['id']})")
             return True
         else:
-            logger.error("Failed to update existing webhook")
+            logger.error(f"[{repo.id}] Failed to update existing webhook")
             return False
     else:
         # Create new webhook
-        endpoint = get_webhook_endpoint()
+        endpoint = get_webhook_endpoint(repo.github_url)
         data = {
             'name': 'web',
             'config': webhook_config,
             'events': ['workflow_job'],
             'active': True
         }
-        result = github_api_request(endpoint, method='POST', data=data)
+        result = github_api_request(repo.github_url, repo.github_token, endpoint, 
+                                    method='POST', data=data)
         if result:
-            logger.info(f"Created new webhook (ID: {result.get('id')})")
+            logger.info(f"[{repo.id}] Created new webhook (ID: {result.get('id')})")
             return True
         else:
-            logger.error("Failed to create webhook")
+            logger.error(f"[{repo.id}] Failed to create webhook")
             return False
 
 
-def verify_signature(payload: bytes, signature: str) -> bool:
+def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
     """Verify the webhook signature from GitHub."""
-    if not WEBHOOK_SECRET:
+    if not secret:
         logger.warning("No webhook secret configured, skipping signature verification")
         return True
     
@@ -289,7 +316,7 @@ def verify_signature(payload: bytes, signature: str) -> bool:
         return False
     
     expected_sig = 'sha256=' + hmac.new(
-        WEBHOOK_SECRET.encode('utf-8'),
+        secret.encode('utf-8'),
         payload,
         hashlib.sha256
     ).hexdigest()
@@ -297,16 +324,16 @@ def verify_signature(payload: bytes, signature: str) -> bool:
     return hmac.compare_digest(signature, expected_sig)
 
 
-def get_registration_token() -> str | None:
+def get_registration_token(repo: RepoConfig) -> Optional[str]:
     """Get a registration token for the runner."""
-    owner, repo = parse_github_url(GITHUB_URL)
+    owner, repo_name = parse_github_url(repo.github_url)
     
-    if repo:
-        endpoint = f"/repos/{owner}/{repo}/actions/runners/registration-token"
+    if repo_name:
+        endpoint = f"/repos/{owner}/{repo_name}/actions/runners/registration-token"
     else:
         endpoint = f"/orgs/{owner}/actions/runners/registration-token"
     
-    result = github_api_request(endpoint, method='POST')
+    result = github_api_request(repo.github_url, repo.github_token, endpoint, method='POST')
     
     if result and 'token' in result:
         return result['token']
@@ -314,35 +341,35 @@ def get_registration_token() -> str | None:
     return None
 
 
-def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
+def spawn_runner(repo: RepoConfig, job_id: int, job_name: str, labels: list[str]) -> bool:
     """Spawn an ephemeral runner container for a job."""
     # Validate job_id
     if not isinstance(job_id, int) or job_id <= 0:
-        logger.error(f"Invalid job_id: {job_id}")
+        logger.error(f"[{repo.id}] Invalid job_id: {job_id}")
         return False
     
-    with runners_lock:
-        if len(active_runners) >= MAX_RUNNERS:
-            logger.warning(f"Maximum runners ({MAX_RUNNERS}) reached, cannot spawn new runner")
+    with repo.runners_lock:
+        if len(repo.active_runners) >= repo.max_runners:
+            logger.warning(f"[{repo.id}] Maximum runners ({repo.max_runners}) reached, cannot spawn new runner")
             return False
         
-        if job_id in active_runners:
-            logger.info(f"Runner already exists for job {job_id}")
+        if job_id in repo.active_runners:
+            logger.info(f"[{repo.id}] Runner already exists for job {job_id}")
             return True
         
         # Get registration token inside the lock to prevent race conditions
-        token = get_registration_token()
+        token = get_registration_token(repo)
         if not token:
-            logger.error("Failed to get registration token")
+            logger.error(f"[{repo.id}] Failed to get registration token")
             return False
         
         # Re-check runner existence after token acquisition
-        if job_id in active_runners:
-            logger.info(f"Runner already exists for job {job_id} (after token acquisition)")
+        if job_id in repo.active_runners:
+            logger.info(f"[{repo.id}] Runner already exists for job {job_id} (after token acquisition)")
             return True
     
-    # Generate unique runner name (moved outside the lock since we have the token)
-    runner_name = f"ephemeral-{job_id}-{int(time.time())}"
+    # Generate unique runner name
+    runner_name = f"ephemeral-{repo.id}-{job_id}-{int(time.time())}"
 
     # Determine architecture and platform
     platform_args = []
@@ -364,16 +391,15 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         arch_label = 'arm64'
         if not is_host_arm:
             platform_args = ['--platform', 'linux/arm64']
-            logger.info(f"Job {job_id} requested arm64 on {host_machine} host, using emulation")
+            logger.info(f"[{repo.id}] Job {job_id} requested arm64 on {host_machine} host, using emulation")
     elif 'x64' in normalized_labels or 'amd64' in normalized_labels:
         arch_label = 'x64'
         if is_host_arm:
             platform_args = ['--platform', 'linux/amd64']
-            logger.info(f"Job {job_id} requested amd64/x64 on {host_machine} host, using emulation")
+            logger.info(f"[{repo.id}] Job {job_id} requested amd64/x64 on {host_machine} host, using emulation")
     
-    # Adjust RUNNER_LABELS to match architecture
-    # Remove any existing arch labels from the configured defaults
-    base_labels = [l for l in RUNNER_LABELS.split(',') if l.lower() not in ('x64', 'amd64', 'arm64')]
+    # Adjust runner labels to match architecture
+    base_labels = [l for l in repo.runner_labels.split(',') if l.lower() not in ('x64', 'amd64', 'arm64')]
     runner_labels = ','.join(base_labels + [arch_label])
     
     # Build docker command
@@ -382,46 +408,51 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         '--name', runner_name,
         '--rm',  # Auto-remove when stopped
     ] + platform_args + [
-        '-e', f'GITHUB_URL={GITHUB_URL}',
+        '-e', f'GITHUB_URL={repo.github_url}',
         '-e', f'GITHUB_TOKEN={token}',
         '-e', f'RUNNER_NAME={runner_name}',
         '-e', f'RUNNER_LABELS={runner_labels}',
         '--privileged',  # Required for Docker-in-Docker
         '-v', '/var/run/docker.sock:/var/run/docker.sock',
-        RUNNER_IMAGE
     ]
+    
+    # Add network if specified
+    if DOCKER_NETWORK:
+        cmd.extend(['--network', DOCKER_NETWORK])
+    
+    cmd.append(repo.runner_image)
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             container_id = result.stdout.strip()
-            with runners_lock:
-                active_runners[job_id] = {
+            with repo.runners_lock:
+                repo.active_runners[job_id] = {
                     'container_id': container_id,
                     'runner_name': runner_name,
                     'job_name': job_name,
                     'started_at': time.time()
                 }
-            logger.info(f"Spawned runner {runner_name} for job {job_id} ({job_name})")
+            logger.info(f"[{repo.id}] Spawned runner {runner_name} for job {job_id} ({job_name})")
             return True
         else:
-            logger.error(f"Failed to spawn runner: {result.stderr}")
+            logger.error(f"[{repo.id}] Failed to spawn runner: {result.stderr}")
             return False
     except subprocess.TimeoutExpired:
-        logger.error("Timeout spawning runner container")
+        logger.error(f"[{repo.id}] Timeout spawning runner container")
         return False
     except Exception as e:
-        logger.error(f"Error spawning runner: {e}")
+        logger.error(f"[{repo.id}] Error spawning runner: {e}")
         return False
 
 
-def cleanup_runner(job_id: int) -> None:
+def cleanup_runner(repo: RepoConfig, job_id: int) -> None:
     """Clean up a runner container after job completion."""
-    with runners_lock:
-        runner_info = active_runners.pop(job_id, None)
+    with repo.runners_lock:
+        runner_info = repo.active_runners.pop(job_id, None)
     
     if not runner_info:
-        logger.debug(f"No runner found for job {job_id}")
+        logger.debug(f"[{repo.id}] No runner found for job {job_id}")
         return
     
     runner_name = runner_info['runner_name']
@@ -433,20 +464,34 @@ def cleanup_runner(job_id: int) -> None:
             capture_output=True,
             timeout=30
         )
-        logger.info(f"Stopped runner {runner_name} for job {job_id}")
+        logger.info(f"[{repo.id}] Stopped runner {runner_name} for job {job_id}")
     except Exception as e:
-        logger.debug(f"Runner cleanup (may already be stopped): {e}")
+        logger.debug(f"[{repo.id}] Runner cleanup (may already be stopped): {e}")
 
 
-def labels_match(job_labels: list[str]) -> bool:
+def labels_match(job_labels: list[str], required_labels: str) -> bool:
     """Check if job labels match our required labels."""
-    if not REQUIRED_LABELS:
+    if not required_labels:
         return True
     
-    required = set(label.strip().lower() for label in REQUIRED_LABELS.split(','))
+    required = set(label.strip().lower() for label in required_labels.split(','))
     job_labels_lower = set(label.lower() for label in job_labels)
     
     return required.issubset(job_labels_lower)
+
+
+def find_repo_by_url(github_url: str) -> Optional[RepoConfig]:
+    """Find a repo config by its GitHub URL."""
+    # Normalize the URL for comparison
+    normalized = github_url.rstrip('/').removesuffix('.git').lower()
+    
+    with repos_lock:
+        for repo in repos.values():
+            repo_normalized = repo.github_url.rstrip('/').removesuffix('.git').lower()
+            if repo_normalized == normalized:
+                return repo
+    
+    return None
 
 
 class WebhookHandler(http.server.BaseHTTPRequestHandler):
@@ -457,33 +502,90 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         logger.info(f"{self.address_string()} - {format % args}")
     
     def do_GET(self):
-        """Handle GET requests (health check)."""
+        """Handle GET requests (health check, status)."""
         if self.path == '/health':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             
-            with runners_lock:
-                runner_count = len(active_runners)
+            total_runners = 0
+            repo_status = {}
+            
+            with repos_lock:
+                for repo_id, repo in repos.items():
+                    with repo.runners_lock:
+                        count = len(repo.active_runners)
+                        total_runners += count
+                        repo_status[repo_id] = {
+                            'active_runners': count,
+                            'max_runners': repo.max_runners
+                        }
             
             response = {
                 'status': 'healthy',
-                'active_runners': runner_count,
-                'max_runners': MAX_RUNNERS
+                'total_active_runners': total_runners,
+                'repositories': repo_status
             }
             self.wfile.write(json.dumps(response).encode())
+        
+        elif self.path == '/status':
+            # Detailed status endpoint
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            
+            repo_details = {}
+            
+            with repos_lock:
+                for repo_id, repo in repos.items():
+                    with repo.runners_lock:
+                        runners = []
+                        for job_id, info in repo.active_runners.items():
+                            runners.append({
+                                'job_id': job_id,
+                                'runner_name': info['runner_name'],
+                                'job_name': info['job_name'],
+                                'running_seconds': int(time.time() - info['started_at'])
+                            })
+                        
+                        repo_details[repo_id] = {
+                            'github_url': repo.github_url,
+                            'active_runners': len(runners),
+                            'max_runners': repo.max_runners,
+                            'runners': runners
+                        }
+            
+            response = {
+                'status': 'healthy',
+                'repositories': repo_details
+            }
+            self.wfile.write(json.dumps(response).encode())
+        
         elif self.path == '/':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
             self.end_headers()
-            self.wfile.write(b'GitHub Actions Webhook Controller')
+            self.wfile.write(b'GitHub Actions Webhook Controller (Multi-Repo)')
+        
         else:
             self.send_response(404)
             self.end_headers()
     
     def do_POST(self):
         """Handle POST requests (webhook events)."""
-        if self.path != '/webhook':
+        # Parse the path to extract repo_id
+        # Supports: /webhook (legacy single-repo), /webhook/{repo_id} (multi-repo)
+        # Strip query strings before parsing path
+        from urllib.parse import urlparse
+        parsed_path = urlparse(self.path).path
+        path_parts = parsed_path.strip('/').split('/')
+        
+        if len(path_parts) == 1 and path_parts[0] == 'webhook':
+            # Legacy single-repo mode or auto-detect from payload
+            repo_id = None
+        elif len(path_parts) == 2 and path_parts[0] == 'webhook':
+            repo_id = path_parts[1]
+        else:
             self.send_response(404)
             self.end_headers()
             return
@@ -492,10 +594,56 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         content_length = int(self.headers.get('Content-Length', 0))
         payload = self.rfile.read(content_length)
         
+        # Parse payload first to potentially identify repo
+        try:
+            data = json.loads(payload.decode('utf-8'))
+        except json.JSONDecodeError:
+            logger.error("Invalid JSON payload")
+            self.send_response(400)
+            self.end_headers()
+            return
+        
+        # Find the repo config
+        repo = None
+        
+        if repo_id:
+            # Direct repo_id from path
+            with repos_lock:
+                repo = repos.get(repo_id)
+            
+            if not repo:
+                logger.warning(f"Unknown repo_id in webhook path: {repo_id}")
+                self.send_response(404)
+                self.end_headers()
+                return
+        else:
+            # Try to find repo from payload (legacy mode)
+            repository = data.get('repository', {})
+            html_url = repository.get('html_url', '')
+            
+            if html_url:
+                repo = find_repo_by_url(html_url)
+            
+            if not repo:
+                # Fall back to single configured repo if only one exists
+                with repos_lock:
+                    if len(repos) == 1:
+                        repo = list(repos.values())[0]
+                    else:
+                        logger.warning(f"Cannot determine repo for webhook from {html_url}")
+                        self.send_response(400)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps({
+                            'error': 'Cannot determine target repository',
+                            'hint': 'Use /webhook/{repo_id} endpoint for multi-repo setups'
+                        }).encode())
+                        return
+        
         # Verify signature
         signature = self.headers.get('X-Hub-Signature-256', '')
-        if not verify_signature(payload, signature):
-            logger.warning("Invalid webhook signature")
+        if not verify_signature(payload, signature, repo.webhook_secret):
+            logger.warning(f"[{repo.id}] Invalid webhook signature")
             self.send_response(401)
             self.end_headers()
             return
@@ -503,17 +651,8 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         # Check event type
         event_type = self.headers.get('X-GitHub-Event', '')
         if event_type != 'workflow_job':
-            logger.debug(f"Ignoring event type: {event_type}")
+            logger.debug(f"[{repo.id}] Ignoring event type: {event_type}")
             self.send_response(200)
-            self.end_headers()
-            return
-        
-        # Parse payload
-        try:
-            data = json.loads(payload.decode('utf-8'))
-        except json.JSONDecodeError:
-            logger.error("Invalid JSON payload")
-            self.send_response(400)
             self.end_headers()
             return
         
@@ -524,12 +663,23 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         job_name = job.get('name', 'unknown')
         job_labels = job.get('labels', [])
         
-        logger.info(f"Received workflow_job event: action={action}, job_id={job_id}, name={job_name}")
+        # Validate job_id is present
+        if job_id is None:
+            logger.warning(f"[{repo.id}] Missing workflow_job.id in payload")
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'error': 'Missing workflow_job.id in payload'
+            }).encode())
+            return
+        
+        logger.info(f"[{repo.id}] Received workflow_job event: action={action}, job_id={job_id}, name={job_name}")
         
         if action == 'queued':
             # Check if labels match
-            if not labels_match(job_labels):
-                logger.info(f"Job {job_id} labels {job_labels} don't match required labels, ignoring")
+            if not labels_match(job_labels, repo.required_labels):
+                logger.info(f"[{repo.id}] Job {job_id} labels {job_labels} don't match required labels, ignoring")
                 self.send_response(200)
                 self.end_headers()
                 return
@@ -537,13 +687,13 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
             # Spawn runner in background
             thread = threading.Thread(
                 target=spawn_runner,
-                args=(job_id, job_name, job_labels)
+                args=(repo, job_id, job_name, job_labels)
             )
             thread.start()
         
         elif action == 'completed':
             # Cleanup runner in background
-            thread = threading.Thread(target=cleanup_runner, args=(job_id,))
+            thread = threading.Thread(target=cleanup_runner, args=(repo, job_id))
             thread.start()
         
         self.send_response(200)
@@ -555,43 +705,164 @@ def cleanup_stale_runners():
     while True:
         time.sleep(300)  # Check every 5 minutes
         
-        with runners_lock:
-            stale_jobs = []
-            current_time = time.time()
-            
-            for job_id, info in active_runners.items():
-                # Consider stale after 6 hours
-                if current_time - info['started_at'] > 21600:
-                    stale_jobs.append(job_id)
+        with repos_lock:
+            repo_list = list(repos.values())
         
-        for job_id in stale_jobs:
-            logger.warning(f"Cleaning up stale runner for job {job_id}")
-            cleanup_runner(job_id)
+        for repo in repo_list:
+            with repo.runners_lock:
+                stale_jobs = []
+                current_time = time.time()
+                
+                for job_id, info in repo.active_runners.items():
+                    # Consider stale after 6 hours
+                    if current_time - info['started_at'] > 21600:
+                        stale_jobs.append(job_id)
+            
+            for job_id in stale_jobs:
+                logger.warning(f"[{repo.id}] Cleaning up stale runner for job {job_id}")
+                cleanup_runner(repo, job_id)
+
+
+def load_config_file(config_path: str) -> list[dict]:
+    """Load repository configurations from JSON file."""
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        # Get defaults
+        defaults = config.get('defaults', {})
+        
+        # Process repositories
+        repo_configs = []
+        for repo_data in config.get('repositories', []):
+            # Merge with defaults
+            merged = {**defaults, **repo_data}
+            repo_configs.append(merged)
+        
+        return repo_configs
+    except Exception as e:
+        logger.error(f"Failed to load config file {config_path}: {e}")
+        return []
+
+
+def load_single_repo_config() -> Optional[dict]:
+    """Load single repository configuration from environment variables."""
+    github_url = os.environ.get('GITHUB_URL', '')
+    github_token = os.environ.get('GITHUB_ACCESS_TOKEN', '')
+    
+    if not github_url or not github_token:
+        return None
+    
+    # Parse URL to create a repo ID
+    try:
+        owner, repo_name = parse_github_url(github_url)
+        repo_id = repo_name if repo_name else owner
+    except ValueError:
+        repo_id = 'default'
+    
+    return {
+        'id': repo_id,
+        'github_url': github_url,
+        'github_token': github_token,
+        'webhook_secret': os.environ.get('WEBHOOK_SECRET', ''),
+        'runner_image': os.environ.get('RUNNER_IMAGE', 'ghcr.io/depoll/gh-runner-docker:ephemeral'),
+        'runner_labels': os.environ.get('RUNNER_LABELS', 'self-hosted,linux'),
+        'required_labels': os.environ.get('REQUIRED_LABELS', ''),
+        'max_runners': int(os.environ.get('MAX_RUNNERS', '10'))
+    }
+
+
+def initialize_repos():
+    """Initialize repository configurations from config file or environment."""
+    global repos
+    
+    repo_configs = []
+    
+    # Try config file first
+    if REPOS_CONFIG_FILE:
+        logger.info(f"Loading configuration from {REPOS_CONFIG_FILE}")
+        repo_configs = load_config_file(REPOS_CONFIG_FILE)
+    
+    # Fall back to single-repo environment variables
+    if not repo_configs:
+        single_config = load_single_repo_config()
+        if single_config:
+            logger.info("Using single-repo configuration from environment variables")
+            repo_configs = [single_config]
+    
+    if not repo_configs:
+        logger.error("No repository configuration found. Set REPOS_CONFIG_FILE or GITHUB_URL/GITHUB_ACCESS_TOKEN")
+        return False
+    
+    # Create RepoConfig objects
+    with repos_lock:
+        for config in repo_configs:
+            try:
+                repo_id = config['id']
+                
+                # Load or generate webhook secret
+                webhook_secret = load_or_generate_secret(repo_id, config.get('webhook_secret', ''))
+                
+                # Check for duplicate repo IDs
+                if repo_id in repos:
+                    logger.error(f"Duplicate repository ID '{repo_id}' found in configuration, skipping")
+                    continue
+                
+                repo = RepoConfig(
+                    id=repo_id,
+                    github_url=config['github_url'],
+                    github_token=config['github_token'],
+                    runner_labels=config.get('runner_labels', 'self-hosted,linux'),
+                    required_labels=config.get('required_labels', ''),
+                    max_runners=int(config.get('max_runners', 10)),
+                    runner_image=config.get('runner_image', 'ghcr.io/depoll/gh-runner-docker:ephemeral'),
+                    webhook_secret=webhook_secret
+                )
+                
+                repos[repo_id] = repo
+                logger.info(f"[{repo_id}] Configured: {repo.github_url}")
+                
+            except KeyError as e:
+                logger.error(f"Missing required field in repo config: {e}")
+                continue
+            except Exception as e:
+                logger.error(f"Error configuring repo: {e}")
+                continue
+    
+    return len(repos) > 0
+
+
+def register_all_webhooks():
+    """Register webhooks for all configured repositories."""
+    if not WEBHOOK_HOST:
+        logger.info("WEBHOOK_HOST not set, skipping webhook auto-registration")
+        return
+    
+    with repos_lock:
+        repo_list = list(repos.values())
+    
+    for repo in repo_list:
+        if not register_webhook(repo):
+            logger.warning(f"[{repo.id}] Failed to register webhook, continuing anyway...")
 
 
 def main():
     """Main entry point."""
-    # Validate configuration
-    if not GITHUB_URL:
-        logger.error("GITHUB_URL environment variable is required")
+    # Initialize repository configurations
+    if not initialize_repos():
+        logger.error("Failed to initialize any repositories")
         exit(1)
     
-    if not GITHUB_ACCESS_TOKEN:
-        logger.error("GITHUB_ACCESS_TOKEN environment variable is required")
-        exit(1)
+    # Register webhooks if WEBHOOK_HOST is set
+    register_all_webhooks()
     
-    # Load or generate webhook secret
-    secret = load_or_generate_secret()
-    
-    # Register webhook if WEBHOOK_HOST is set
-    if WEBHOOK_HOST:
-        if not register_webhook(secret):
-            logger.warning("Failed to register webhook, continuing anyway...")
-    else:
-        logger.info("WEBHOOK_HOST not set, manual webhook configuration required")
-        if not WEBHOOK_SECRET:
-            logger.info(f"Auto-generated webhook secret: {secret}")
-            logger.info("Configure this secret in your GitHub webhook settings")
+    # Log webhook configuration hints if not auto-registering
+    if not WEBHOOK_HOST:
+        logger.info("Manual webhook configuration required:")
+        with repos_lock:
+            for repo_id, repo in repos.items():
+                logger.info(f"  [{repo_id}] Webhook URL: <your-host>/webhook/{repo_id}")
+                logger.info(f"  [{repo_id}] Webhook secret: {repo.webhook_secret}")
     
     # Start cleanup thread
     cleanup_thread = threading.Thread(target=cleanup_stale_runners, daemon=True)
@@ -600,9 +871,11 @@ def main():
     # Start server
     server = http.server.HTTPServer(('0.0.0.0', PORT), WebhookHandler)
     logger.info(f"Webhook controller starting on port {PORT}")
-    logger.info(f"GitHub URL: {GITHUB_URL}")
-    logger.info(f"Runner image: {RUNNER_IMAGE}")
-    logger.info(f"Max runners: {MAX_RUNNERS}")
+    logger.info(f"Configured repositories: {len(repos)}")
+    
+    with repos_lock:
+        for repo_id, repo in repos.items():
+            logger.info(f"  [{repo_id}] {repo.github_url} (max {repo.max_runners} runners)")
     
     try:
         server.serve_forever()

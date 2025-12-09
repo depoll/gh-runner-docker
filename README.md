@@ -154,7 +154,9 @@ That's it! The stack will:
 
 ## Configuration
 
-### Environment Variables
+### Single-Repo Mode (Environment Variables)
+
+For a single repository, configure via environment variables:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -169,6 +171,66 @@ That's it! The stack will:
 | `RUNNER_GROUP` | No | `default` | Runner group name |
 | `REPLICAS` | No | `3` | Number of static runners |
 | `RUNNER_IMAGE` | No | `ghcr.io/depoll/gh-runner-docker:ephemeral` | Ephemeral runner image |
+
+### Multi-Repo Mode (JSON Configuration)
+
+For multiple repositories, use a JSON configuration file. This allows independent credentials and settings for each repository.
+
+1. **Create a configuration file** (see `repos.example.json`):
+
+```json
+{
+  "repositories": [
+    {
+      "id": "myapp",
+      "github_url": "https://github.com/myorg/myapp",
+      "github_token": "ghp_xxxxxxxxxxxx",
+      "runner_labels": "self-hosted,linux",
+      "max_runners": 5
+    },
+    {
+      "id": "backend",
+      "github_url": "https://github.com/myorg/backend",
+      "github_token": "ghp_yyyyyyyyyyyy",
+      "runner_labels": "self-hosted,linux,backend",
+      "max_runners": 10
+    }
+  ],
+  "defaults": {
+    "runner_image": "ghcr.io/depoll/gh-runner-docker:ephemeral",
+    "runner_labels": "self-hosted,linux",
+    "max_runners": 10
+  }
+}
+```
+
+2. **Set the config file path** in your `.env`:
+
+```bash
+REPOS_CONFIG_FILE=/config/repos.json
+```
+
+3. **Mount the config file** in `docker-compose.autoscale.yml`:
+
+```yaml
+volumes:
+  - ./repos.json:/config/repos.json:ro
+```
+
+Each repository gets its own webhook endpoint: `{WEBHOOK_HOST}/webhook/{repo_id}`
+
+#### Multi-Repo Config Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Unique identifier (used in webhook path and runner names) |
+| `github_url` | Yes | Repository or organization URL |
+| `github_token` | Yes | GitHub PAT for this repository |
+| `runner_labels` | No | Runner labels (inherits from defaults) |
+| `required_labels` | No | Only handle jobs with these labels |
+| `max_runners` | No | Max concurrent runners for this repo |
+| `runner_image` | No | Docker image for runners |
+| `webhook_secret` | No | Manual secret (auto-generated if not set) |
 
 ### GitHub Token Scopes
 
@@ -219,18 +281,55 @@ All images are multi-architecture (amd64 and arm64).
 
 ### Health Check Endpoint
 
-The autoscaling controller provides a health check endpoint:
+The autoscaling controller provides health and status endpoints:
 
 ```bash
+# Basic health check
 curl http://localhost:8080/health
+
+# Detailed status (shows all runners)
+curl http://localhost:8080/status
 ```
 
-Response:
+Health response (single-repo):
 ```json
 {
   "status": "healthy",
-  "active_runners": 2,
-  "max_runners": 10
+  "total_active_runners": 2,
+  "repositories": {
+    "myrepo": {
+      "active_runners": 2,
+      "max_runners": 10
+    }
+  }
+}
+```
+
+Status response (multi-repo):
+```json
+{
+  "status": "healthy",
+  "repositories": {
+    "myapp": {
+      "github_url": "https://github.com/myorg/myapp",
+      "active_runners": 1,
+      "max_runners": 5,
+      "runners": [
+        {
+          "job_id": 12345,
+          "runner_name": "ephemeral-myapp-12345-1234567890",
+          "job_name": "build",
+          "running_seconds": 45
+        }
+      ]
+    },
+    "backend": {
+      "github_url": "https://github.com/myorg/backend",
+      "active_runners": 0,
+      "max_runners": 10,
+      "runners": []
+    }
+  }
 }
 ```
 
