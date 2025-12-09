@@ -27,7 +27,6 @@
   "defaults": {
     "runner_image": "ghcr.io/depoll/gh-runner-docker:ephemeral",
     "runner_labels": "self-hosted,linux",
-    "max_runners": 10,
-    "docker_network": "gh-runner-network"
+    "max_runners": 10
   }
 }

@@ -84,11 +84,8 @@ class RepoConfig:
     runners_lock: threading.Lock = field(default_factory=threading.Lock)
     
     def __post_init__(self):
-        # Ensure lock is created if not provided
-        if self.runners_lock is None:
-            self.runners_lock = threading.Lock()
-        if self.active_runners is None:
-            self.active_runners = {}
+        # dataclass default_factory handles initialization
+        pass
 
 
 # Global registry of repo configurations
@@ -578,7 +575,10 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         """Handle POST requests (webhook events)."""
         # Parse the path to extract repo_id
         # Supports: /webhook (legacy single-repo), /webhook/{repo_id} (multi-repo)
-        path_parts = self.path.strip('/').split('/')
+        # Strip query strings before parsing path
+        from urllib.parse import urlparse
+        parsed_path = urlparse(self.path).path
+        path_parts = parsed_path.strip('/').split('/')
         
         if len(path_parts) == 1 and path_parts[0] == 'webhook':
             # Legacy single-repo mode or auto-detect from payload
@@ -662,6 +662,17 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         job_id = job.get('id')
         job_name = job.get('name', 'unknown')
         job_labels = job.get('labels', [])
+        
+        # Validate job_id is present
+        if job_id is None:
+            logger.warning(f"[{repo.id}] Missing workflow_job.id in payload")
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'error': 'Missing workflow_job.id in payload'
+            }).encode())
+            return
         
         logger.info(f"[{repo.id}] Received workflow_job event: action={action}, job_id={job_id}, name={job_name}")
         
@@ -791,6 +802,11 @@ def initialize_repos():
                 
                 # Load or generate webhook secret
                 webhook_secret = load_or_generate_secret(repo_id, config.get('webhook_secret', ''))
+                
+                # Check for duplicate repo IDs
+                if repo_id in repos:
+                    logger.error(f"Duplicate repository ID '{repo_id}' found in configuration, skipping")
+                    continue
                 
                 repo = RepoConfig(
                     id=repo_id,
