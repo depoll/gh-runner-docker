@@ -79,16 +79,17 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=ephemeral,enable={{is_default_branch}}
-            type=raw,value=ephemeral-${{ steps.get-version.outputs.runner_version }},enable={{is_default_branch}}
+            type=raw,value=ephemeral,enable=${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true) }}
+            type=raw,value=ephemeral-${{ steps.get-version.outputs.runner_version }},enable=${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true) }}
 
       - name: Build and push ephemeral runner image
+        if: github.event_name != 'pull_request' && (github.event_name != 'pull_request_target' || github.event.pull_request.merged == true)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: Dockerfile.ephemeral
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' && (github.event_name != 'pull_request_target' || github.event.pull_request.merged == true) }}
+          push: true
           tags: ${{ steps.meta-ephemeral.outputs.tags }}
           labels: ${{ steps.meta-ephemeral.outputs.labels }}
           cache-from: type=gha
@@ -102,15 +103,16 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/depoll/gh-runner-controller
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true) }}
             type=ref,event=branch
 
       - name: Build and push controller image
+        if: github.event_name != 'pull_request' && (github.event_name != 'pull_request_target' || github.event.pull_request.merged == true)
         uses: docker/build-push-action@v5
         with:
           context: ./controller
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' && (github.event_name != 'pull_request_target' || github.event.pull_request.merged == true) }}
+          push: true
           tags: ${{ steps.meta-controller.outputs.tags }}
           labels: ${{ steps.meta-controller.outputs.labels }}
           cache-from: type=gha
@@ -122,15 +124,16 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/depoll/gh-runner-nginx
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true) }}
             type=ref,event=branch
 
       - name: Build and push nginx image
+        if: github.event_name != 'pull_request' && (github.event_name != 'pull_request_target' || github.event.pull_request.merged == true)
         uses: docker/build-push-action@v5
         with:
           context: ./nginx
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' && (github.event_name != 'pull_request_target' || github.event.pull_request.merged == true) }}
+          push: true
           tags: ${{ steps.meta-nginx.outputs.tags }}
           labels: ${{ steps.meta-nginx.outputs.labels }}
           cache-from: type=gha
