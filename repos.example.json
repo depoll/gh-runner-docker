@@ -1,0 +1,33 @@
+{
+  "repositories": [
+    {
+      "id": "myapp",
+      "github_url": "https://github.com/myorg/myapp",
+      "github_token": "ghp_xxxxxxxxxxxxxxxxxxxx",
+      "runner_labels": "self-hosted,linux",
+      "max_runners": 5,
+      "runner_image": "ghcr.io/depoll/gh-runner-docker:ephemeral"
+    },
+    {
+      "id": "backend-services",
+      "github_url": "https://github.com/myorg/backend-services",
+      "github_token": "ghp_yyyyyyyyyyyyyyyyyyyy",
+      "runner_labels": "self-hosted,linux,backend",
+      "max_runners": 10
+    },
+    {
+      "id": "frontend",
+      "github_url": "https://github.com/myorg/frontend",
+      "github_token": "ghp_zzzzzzzzzzzzzzzzzzzz",
+      "runner_labels": "self-hosted,linux,frontend",
+      "max_runners": 3,
+      "required_labels": "frontend"
+    }
+  ],
+  "defaults": {
+    "runner_image": "ghcr.io/depoll/gh-runner-docker:ephemeral",
+    "runner_labels": "self-hosted,linux",
+    "max_runners": 10,
+    "docker_network": "gh-runner-network"
+  }
+}

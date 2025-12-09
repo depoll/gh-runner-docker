@@ -86,15 +86,52 @@ docker build -t gh-runner-controller:latest ./controller
 
 ## Configuration
 
-### Required Variables
+### Single-Repo Mode (Simple Setup)
+
+For a single repository, use environment variables:
 
 - `GITHUB_URL`: Repository or organization URL
 - `GITHUB_TOKEN`: GitHub PAT (auto-exchanges for registration token if PAT detected)
 
+### Multi-Repo Mode (Multiple Repositories)
+
+For multiple repositories, use a JSON config file:
+
+```bash
+# Set the config file path
+REPOS_CONFIG_FILE=/config/repos.json
+
+# Mount the config file in docker-compose
+volumes:
+  - ./repos.json:/config/repos.json:ro
+```
+
+See `repos.example.json` for the configuration format:
+
+```json
+{
+  "repositories": [
+    {
+      "id": "myapp",
+      "github_url": "https://github.com/myorg/myapp",
+      "github_token": "ghp_xxx",
+      "runner_labels": "self-hosted,linux",
+      "max_runners": 5
+    }
+  ],
+  "defaults": {
+    "runner_image": "ghcr.io/depoll/gh-runner-docker:ephemeral",
+    "max_runners": 10
+  }
+}
+```
+
+Each repository gets its own webhook endpoint: `/webhook/{repo_id}`
+
 ### Autoscaling-Specific Variables
 
 - `WEBHOOK_HOST`: Public URL for auto-registering webhook with GitHub (e.g., `https://your-server.com`)
-- `WEBHOOK_SECRET`: Manual webhook secret (auto-generated if not set)
+- `WEBHOOK_SECRET`: Manual webhook secret (auto-generated if not set) - single-repo mode only
 - `MAX_RUNNERS`: Maximum concurrent ephemeral runners (default: 10)
 - `RUNNER_IMAGE`: Docker image for ephemeral runners
 
@@ -102,9 +139,12 @@ docker build -t gh-runner-controller:latest ./controller
 
 1. **Auto-registration** (recommended): Set `WEBHOOK_HOST` to your public URL. Controller registers webhook automatically.
    - Requires: `admin:repo_hook` (repo) or `admin:org_hook` (org) scope
-   - Secret is auto-generated and persisted to `/data/webhook_secret`
+   - Secret is auto-generated and persisted to `/data/secrets/{repo_id}`
+   - Multi-repo: Each repo gets webhook at `{WEBHOOK_HOST}/webhook/{repo_id}`
 
-2. **Manual setup**: Set `WEBHOOK_SECRET` and configure webhook in GitHub settings.
+2. **Manual setup**: Configure webhook in GitHub settings.
+   - Single-repo: Use `/webhook` endpoint
+   - Multi-repo: Use `/webhook/{repo_id}` endpoint for each repo
 
 ### Common Variables
 
