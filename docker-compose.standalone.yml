@@ -1,0 +1,92 @@
+# GitHub Actions Autoscaling Ephemeral Runners - Standalone
+#
+# Use this file if you want to run the autoscaling stack without cloning the repo.
+# All images are pulled from GitHub Container Registry.
+#
+# Usage:
+#   # Download this file
+#   curl -O https://raw.githubusercontent.com/depoll/gh-runner-docker/main/docker-compose.standalone.yml
+#
+#   # Create .env file with your settings
+#   cat > .env << EOF
+#   GITHUB_URL=https://github.com/your-org/your-repo
+#   GITHUB_TOKEN=ghp_your_token_here
+#   WEBHOOK_DOMAIN=webhook.example.com
+#   LETSENCRYPT_EMAIL=admin@example.com
+#   WEBHOOK_HOST=https://webhook.example.com
+#   EOF
+#
+#   # Start the stack
+#   docker compose -f docker-compose.standalone.yml up -d
+
+services:
+  # nginx reverse proxy (provide certificates externally for HTTPS)
+  nginx:
+    image: ghcr.io/depoll/gh-runner-nginx:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      WEBHOOK_DOMAIN: ${WEBHOOK_DOMAIN:-}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
+    volumes:
+      - nginx-acme:/etc/nginx/acme
+    networks:
+      - gh-runner-network
+    depends_on:
+      - controller
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Webhook controller - spawns ephemeral runners
+  controller:
+    image: ghcr.io/depoll/gh-runner-controller:latest
+    expose:
+      - "8080"
+    environment:
+      GITHUB_URL: ${GITHUB_URL}
+      GITHUB_ACCESS_TOKEN: ${GITHUB_TOKEN}
+      WEBHOOK_HOST: ${WEBHOOK_HOST:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,linux}
+      MAX_RUNNERS: ${MAX_RUNNERS:-10}
+      RUNNER_IMAGE: ${RUNNER_IMAGE:-ghcr.io/depoll/gh-runner-docker:ephemeral}
+      DOCKER_NETWORK: ${DOCKER_NETWORK:-gh-runner-network}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - controller-data:/data
+    networks:
+      - gh-runner-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Auto-update images
+  watchtower:
+    image: containrrr/watchtower:latest
+    environment:
+      WATCHTOWER_POLL_INTERVAL: 3600
+      WATCHTOWER_CLEANUP: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - gh-runner-network
+    restart: unless-stopped
+
+networks:
+  gh-runner-network:
+    driver: bridge
+    name: gh-runner-network
+
+volumes:
+  controller-data:
+  nginx-acme:

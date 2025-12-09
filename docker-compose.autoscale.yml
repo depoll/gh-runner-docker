@@ -1,0 +1,116 @@
+# GitHub Actions Autoscaling Ephemeral Runners
+#
+# This docker-compose setup provides webhook-based autoscaling for GitHub Actions
+# self-hosted runners. When a workflow job is queued, the controller automatically
+# spawns an ephemeral runner container to handle it.
+#
+# Architecture:
+# - nginx: Reverse proxy with automatic Let's Encrypt certificates (native ACME)
+# - controller: Webhook server that receives workflow_job events from GitHub
+# - Ephemeral runners are spawned on-demand by the controller
+#
+# Usage:
+#   # HTTP only (development/testing):
+#   docker-compose -f docker-compose.autoscale.yml up -d
+#
+#   # HTTPS with Let's Encrypt (production):
+#   WEBHOOK_DOMAIN=webhook.example.com LETSENCRYPT_EMAIL=admin@example.com \
+#   docker-compose -f docker-compose.autoscale.yml up -d
+
+services:
+  # nginx reverse proxy (provide certificates externally for HTTPS)
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    image: ghcr.io/depoll/gh-runner-nginx:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Set both for HTTPS with automatic Let's Encrypt certificates
+      WEBHOOK_DOMAIN: ${WEBHOOK_DOMAIN:-}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
+    volumes:
+      # Persist ACME account and certificates across restarts
+      - nginx-acme:/etc/nginx/acme
+    networks:
+      - gh-runner-network
+    depends_on:
+      - controller
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  controller:
+    build:
+      context: ./controller
+      dockerfile: Dockerfile
+    image: ghcr.io/depoll/gh-runner-controller:latest
+    # No external ports - nginx proxies all traffic
+    expose:
+      - "8080"
+    environment:
+      # Required: GitHub repository or organization URL
+      GITHUB_URL: ${GITHUB_URL}
+      # Required: GitHub personal access token with repo/admin:org scope
+      # For auto-registration, also needs admin:repo_hook or admin:org_hook
+      GITHUB_ACCESS_TOKEN: ${GITHUB_TOKEN}
+      # Option A: Auto-register webhook (set public URL, secret auto-generated)
+      WEBHOOK_HOST: ${WEBHOOK_HOST:-}
+      # Option B: Manual webhook (set secret, leave WEBHOOK_HOST empty)
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      # Optional: Labels for runners (comma-separated)
+      RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,linux}
+      # Optional: Maximum concurrent runners
+      MAX_RUNNERS: ${MAX_RUNNERS:-10}
+      # Optional: Runner image to use
+      RUNNER_IMAGE: ${RUNNER_IMAGE:-ghcr.io/depoll/gh-runner-docker:ephemeral}
+      # Optional: Docker network for runners
+      DOCKER_NETWORK: ${DOCKER_NETWORK:-gh-runner-network}
+    volumes:
+      # SECURITY NOTE: Mounting the Docker socket gives the controller full control over
+      # the host's Docker daemon. For production, consider using a Docker socket proxy
+      # with restricted permissions (e.g., tecnativa/docker-socket-proxy).
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persist webhook secret across restarts
+      - controller-data:/data
+    networks:
+      - gh-runner-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # Optional: Watchtower for auto-updates
+  watchtower:
+    image: containrrr/watchtower:latest
+    environment:
+      WATCHTOWER_POLL_INTERVAL: 3600
+      WATCHTOWER_LABEL_ENABLE: true
+      WATCHTOWER_CLEANUP: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - gh-runner-network
+    restart: unless-stopped
+
+networks:
+  gh-runner-network:
+    driver: bridge
+    name: gh-runner-network
+
+volumes:
+  controller-data:
+  nginx-acme:
