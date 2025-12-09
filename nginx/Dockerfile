@@ -1,23 +1,42 @@
-# nginx reverse proxy for webhook controller
+# nginx reverse proxy for webhook controller with native ACME support
 #
-# IMPORTANT: As of early 2025, nginx does not have a native ACME module in official releases.
-# This configuration is prepared for future nginx ACME support (expected in nginx 1.29+).
-# 
-# For production use TODAY, consider one of these alternatives:
-# - Use certbot in a sidecar container
-# - Use nginx-proxy with acme-companion
-# - Use Caddy (which has built-in ACME)
-# - Use an external load balancer with TLS termination
+# This uses nginx mainline with the ngx_http_acme_module for automatic
+# Let's Encrypt certificate management.
 #
-# The ACME directives in nginx.conf will work once nginx officially releases ACME support.
-# Until then, you may need to manually manage certificates or use HTTP-only mode.
+# Required environment variables:
+# - WEBHOOK_DOMAIN: Your domain name (e.g., webhook.example.com)
+# - LETSENCRYPT_EMAIL: Email for Let's Encrypt notifications
+#
+# The ACME module will automatically:
+# - Register with Let's Encrypt
+# - Obtain certificates for your domain
+# - Renew certificates before expiry
 
-FROM nginx:stable-alpine
+# Use official nginx.org mainline image (has matching package repo)
+FROM nginx:mainline-bookworm
 
-# Install curl for health checks
-RUN apk add --no-cache curl
+# Install curl for health checks, openssl for fallback, and gnupg for repo setup
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    openssl \
+    gnupg2 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Create directory for certificates (manual or future ACME)
+# Add nginx.org official repository for dynamic modules
+RUN curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/debian bookworm nginx" > /etc/apt/sources.list.d/nginx.list
+
+# Install the nginx ACME module
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nginx-module-acme \
+    && rm -rf /var/lib/apt/lists/*
+
+# Load the ACME module - add to main nginx.conf
+RUN sed -i '1i load_module modules/ngx_http_acme_module.so;' /etc/nginx/nginx.conf
+
+# Create directories for ACME state and certificates
+RUN mkdir -p /var/cache/nginx/acme && chmod 700 /var/cache/nginx/acme
 RUN mkdir -p /etc/nginx/acme && chmod 700 /etc/nginx/acme
 
 # Copy nginx configuration templates
