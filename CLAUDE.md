@@ -33,7 +33,7 @@ This repository provides a Docker-based solution for running GitHub Actions self
 - **nginx/Dockerfile**: nginx reverse proxy image
 - **nginx/entrypoint.sh**: Selects config based on environment
 
-> **Note**: As of early 2025, nginx does not have native ACME support. Certificates must be provided externally (e.g., via certbot).
+> **Note**: This repo's nginx image installs the nginx ACME module and can obtain/renew Let's Encrypt certificates automatically when `WEBHOOK_DOMAIN` and `LETSENCRYPT_EMAIL` are set.
 
 ## Build and Run Commands
 
@@ -134,22 +134,27 @@ docker build -t gh-runner-controller:latest ./controller
 ## Container Registry
 
 The GitHub Action builds and publishes multi-architecture images to GHCR:
+
 - `ghcr.io/depoll/gh-runner-docker:latest` - Static pool runner
 - `ghcr.io/depoll/gh-runner-docker:ephemeral` - Ephemeral runner
 - `ghcr.io/depoll/gh-runner-controller:latest` - Webhook controller
+
 
 ## Key Implementation Details
 
 ### Ephemeral Runner Flags
 
 The ephemeral runner uses these important flags:
+
 - `--ephemeral`: Runner auto-deregisters after one job
 - `--disableupdate`: Prevents auto-updates (image controls version)
 - `--replace`: Replaces existing runner with same name
 
+
 ### Webhook Signature Verification
 
 The controller verifies webhooks using HMAC-SHA256:
+
 ```python
 expected = 'sha256=' + hmac.new(
     WEBHOOK_SECRET.encode(),
@@ -158,16 +163,20 @@ expected = 'sha256=' + hmac.new(
 ).hexdigest()
 ```
 
+
 ### Webhook Auto-Registration
 
 The controller can auto-register webhooks via GitHub API:
+
 1. `load_or_generate_secret()`: Checks env → persisted file → generates new
 2. `register_webhook()`: Creates/updates webhook via GitHub REST API
 3. Secret persisted to `/data/webhook_secret` for container restarts
 
+
 ### Health Check Endpoint
 
 Controller provides `/health` endpoint returning:
+
 - Active runner count and details
 - Max runners configuration
 - Runner status and job IDs

@@ -42,7 +42,7 @@ That's it! The stack will:
 - Register the webhook with GitHub automatically  
 - Spawn ephemeral runners when jobs are queued
 
-> **Note**: For HTTPS, you'll need to provide certificates externally (e.g., via certbot). See the TLS section below.
+> **Note**: For HTTPS, set `WEBHOOK_DOMAIN` and `LETSENCRYPT_EMAIL`. The included nginx image can obtain/renew Let's Encrypt certificates automatically. On first boot it may serve a temporary self-signed cert until ACME validation succeeds.
 
 ### Static Pool Mode (Simple)
 
@@ -99,6 +99,7 @@ That's it! The stack will:
    - Auto-register the webhook with GitHub (if `WEBHOOK_HOST` is set)
 
    > **For HTTPS**: You'll need to provide SSL certificates. See the HTTPS Setup section below.
+      > **For HTTPS**: Set `WEBHOOK_DOMAIN` and `LETSENCRYPT_EMAIL`. nginx can obtain/renew Let's Encrypt certificates automatically; first boot may briefly use a self-signed cert.
 
 4. **Verify it's working:**
    ```bash
@@ -135,6 +136,7 @@ That's it! The stack will:
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │                   nginx (ports 80/443)                 │  │
 │  │          TLS termination (certs provided externally)   │  │
+│  │      TLS termination (automatic Let's Encrypt)         │  │
 │  └──────────────────────────────────────────────────────┘  │
 │         │                                                   │
 │         ▼                                                   │
