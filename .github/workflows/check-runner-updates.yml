@@ -145,7 +145,24 @@ jobs:
           if [ "$CURRENT_MAJOR" == "$LATEST_MAJOR" ]; then
             echo "Non-major version update detected - will auto-merge"
             BRANCH_NAME="update-runner-${{ steps.runner-version.outputs.latest_version }}"
-            gh pr merge "$BRANCH_NAME" --auto --squash || echo "Auto-merge could not be enabled; leaving PR open."
+            set +e
+
+            # Prefer auto-merge (waits for checks), but some repos/policies can
+            # block enabling auto-merge via the workflow token.
+            gh pr merge "$BRANCH_NAME" --auto --squash
+            merge_exit=$?
+
+            if [ "$merge_exit" -ne 0 ]; then
+              echo "Auto-merge could not be enabled; trying immediate merge." >&2
+              gh pr merge "$BRANCH_NAME" --squash
+              merge_exit=$?
+            fi
+
+            set -e
+
+            if [ "$merge_exit" -ne 0 ]; then
+              echo "Merge could not be performed; leaving PR open." >&2
+            fi
           else
             echo "Major version update detected - manual review required"
           fi
