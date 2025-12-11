@@ -130,7 +130,7 @@ jobs:
             exit 0
           fi
 
-      - name: Auto-merge if update is a patch/minor version
+      - name: Auto-merge if update is a non-major version
         if: steps.check-update.outputs.update_needed == 'true'
         run: |
           export GH_TOKEN="$GITHUB_TOKEN"
@@ -142,10 +142,10 @@ jobs:
           LATEST_MINOR=$(echo "${{ steps.runner-version.outputs.latest_version }}" | cut -d. -f2)
           
           # Auto-merge if it's not a major version change
-          if [ "$CURRENT_MAJOR" == "$LATEST_MAJOR" ] && [ "$CURRENT_MINOR" == "$LATEST_MINOR" ]; then
-            echo "Patch version update detected - will auto-merge"
+          if [ "$CURRENT_MAJOR" == "$LATEST_MAJOR" ]; then
+            echo "Non-major version update detected - will auto-merge"
             BRANCH_NAME="update-runner-${{ steps.runner-version.outputs.latest_version }}"
             gh pr merge "$BRANCH_NAME" --auto --squash || echo "Auto-merge could not be enabled; leaving PR open."
           else
-            echo "Major/minor version update detected - manual review required"
+            echo "Major version update detected - manual review required"
           fi
