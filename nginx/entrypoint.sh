@@ -4,6 +4,32 @@
 
 set -e
 
+fix_acme_permissions() {
+    # /etc/nginx/acme is a persistent volume; older runs may have created files
+    # with restrictive permissions. nginx loads ssl_certificate/ssl_certificate_key
+    # at handshake time (worker processes), so ensure readability every startup.
+    ACME_DIR="/etc/nginx/acme"
+    CERT_FILE="$ACME_DIR/fullchain.pem"
+    KEY_FILE="$ACME_DIR/privkey.pem"
+
+    mkdir -p "$ACME_DIR" 2>/dev/null || true
+
+    # Allow nginx worker to traverse the directory.
+    chown root:nginx "$ACME_DIR" 2>/dev/null || true
+    chmod 750 "$ACME_DIR" 2>/dev/null || true
+
+    # Certificate can be world-readable; private key should be group-readable.
+    if [ -e "$CERT_FILE" ]; then
+        chown root:nginx "$CERT_FILE" 2>/dev/null || true
+        chmod 644 "$CERT_FILE" 2>/dev/null || true
+    fi
+
+    if [ -e "$KEY_FILE" ]; then
+        chown root:nginx "$KEY_FILE" 2>/dev/null || true
+        chmod 640 "$KEY_FILE" 2>/dev/null || true
+    fi
+}
+
 if [ -n "$WEBHOOK_DOMAIN" ] && [ -n "$LETSENCRYPT_EMAIL" ]; then
     echo "HTTPS mode: Using native ACME module for $WEBHOOK_DOMAIN"
     echo "Let's Encrypt contact: $LETSENCRYPT_EMAIL"
@@ -15,14 +41,8 @@ if [ -n "$WEBHOOK_DOMAIN" ] && [ -n "$LETSENCRYPT_EMAIL" ]; then
     mkdir -p /var/cache/nginx/acme
     chmod 700 /var/cache/nginx/acme
 
-    # Bootstrap: nginx fails hard if ssl_certificate points at non-existent files.
-    # The ACME module should replace these later, but we need something present
-    # for the first start.
-    mkdir -p /etc/nginx/acme
-    # ssl_certificate uses variables in our config, so nginx loads certs/keys at handshake
-    # from worker processes. Ensure the nginx user can read the bootstrap cert/key.
-    chgrp nginx /etc/nginx/acme 2>/dev/null || true
-    chmod 750 /etc/nginx/acme || true
+    # Ensure the persistent ACME volume is usable by nginx workers.
+    fix_acme_permissions
 
     CERT_FILE="/etc/nginx/acme/fullchain.pem"
     KEY_FILE="/etc/nginx/acme/privkey.pem"
@@ -47,10 +67,12 @@ if [ -n "$WEBHOOK_DOMAIN" ] && [ -n "$LETSENCRYPT_EMAIL" ]; then
         mv "$KEY_FILE.tmp" "$KEY_FILE"
         mv "$CERT_FILE.tmp" "$CERT_FILE"
 
-        # Make readable by nginx worker processes (group nginx)
-        chgrp nginx "$KEY_FILE" "$CERT_FILE" 2>/dev/null || true
-        chmod 640 "$KEY_FILE" "$CERT_FILE" 2>/dev/null || true
+        # Ensure perms/ownership are correct after writing.
+        fix_acme_permissions
     fi
+
+    # Even if certs already existed in the volume, ensure permissions are correct.
+    fix_acme_permissions
     
     echo "ACME module will automatically obtain and renew certificates"
 else
