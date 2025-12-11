@@ -684,6 +684,9 @@ def main():
     logger.info(f"GitHub URL: {GITHUB_URL}")
     logger.info(f"Runner image: {RUNNER_IMAGE}")
     logger.info(f"Max runners: {MAX_RUNNERS}")
+    logger.info(f"Docker network for runners: {DOCKER_NETWORK or '(default)'}")
+    logger.info(f"DEBUG_SPAWN_LOGS: {DEBUG_SPAWN_LOGS}")
+    logger.info(f"DEBUG_KEEP_RUNNER_CONTAINER: {DEBUG_KEEP_RUNNER_CONTAINER}")
     
     try:
         server.serve_forever()
