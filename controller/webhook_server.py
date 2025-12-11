@@ -541,6 +541,26 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+
+    def do_HEAD(self):
+        """Handle HEAD requests (used by some probes/validators)."""
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
+        self.send_response(404)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
     
     def do_POST(self):
         """Handle POST requests (webhook events)."""
