@@ -55,6 +55,7 @@ RUNNER_LABELS = os.environ.get('RUNNER_LABELS', 'self-hosted,linux')
 REQUIRED_LABELS = os.environ.get('REQUIRED_LABELS', '')
 MAX_RUNNERS = int(os.environ.get('MAX_RUNNERS', '10'))
 PORT = int(os.environ.get('PORT', '8080'))
+DOCKER_NETWORK = os.environ.get('DOCKER_NETWORK', '')
 
 # Debug / diagnostics
 # If enabled, prints additional spawn diagnostics and tails runner container logs briefly.
@@ -399,13 +400,17 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
     if not DEBUG_KEEP_RUNNER_CONTAINER:
         cmd += ['--rm']  # Auto-remove when stopped
 
+    # Attach to a specific network if requested (useful for consistent DNS / connectivity).
+    if DOCKER_NETWORK:
+        cmd += ['--network', DOCKER_NETWORK]
+
     cmd = cmd + platform_args + [
         '-e', f'GITHUB_URL={GITHUB_URL}',
         '-e', f'GITHUB_TOKEN={token}',
         '-e', f'RUNNER_NAME={runner_name}',
         '-e', f'RUNNER_LABELS={runner_labels}',
+        '-e', f'JOB_ID={job_id}',
         '--privileged',  # Required for Docker-in-Docker
-        '-v', '/var/run/docker.sock:/var/run/docker.sock',
         RUNNER_IMAGE
     ]
 
