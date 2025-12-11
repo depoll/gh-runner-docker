@@ -100,7 +100,7 @@ jobs:
           git commit -m "Update GitHub Actions runner to v${{ steps.runner-version.outputs.latest_version }}"
           
           # Push branch
-          git push --force-with-lease origin "$BRANCH_NAME"
+          git push --force origin "$BRANCH_NAME"
           
           # Create pull request if it doesn't already exist
           if gh pr view "$BRANCH_NAME" --json number --jq .number >/dev/null 2>&1; then
