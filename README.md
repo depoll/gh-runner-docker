@@ -168,9 +168,11 @@ That's it! The stack will:
 | `WEBHOOK_SECRET` | No | Auto-generated | Webhook secret; auto-generated if not provided |
 | `MAX_RUNNERS` | No | `10` | Max concurrent ephemeral runners |
 | `RUNNER_LABELS` | No | `self-hosted,linux` | Comma-separated runner labels |
-| `RUNNER_GROUP` | No | `default` | Runner group name |
+| `RUNNER_GROUP` | No | - | Runner group name (organization-level runners only) |
 | `REPLICAS` | No | `3` | Number of static runners |
 | `RUNNER_IMAGE` | No | `ghcr.io/depoll/gh-runner-docker:ephemeral` | Ephemeral runner image |
+| `DEBUG_SPAWN_LOGS` | No | - | Controller: log spawn details and tail runner logs |
+| `DEBUG_KEEP_RUNNER_CONTAINER` | No | - | Controller: keep failed runner containers (disables `--rm`) |
 
 ### GitHub Token Scopes
 
@@ -228,6 +230,7 @@ curl http://localhost:8080/health
 ```
 
 Response:
+
 ```json
 {
   "status": "healthy",
@@ -249,28 +252,33 @@ docker-compose logs -f gh-runner
 ## Troubleshooting
 
 **Runners not appearing in GitHub:**
+
 - Check your `GITHUB_URL` format
 - Verify `GITHUB_TOKEN` has correct permissions
 - Check container logs
 
 **Webhook not receiving events:**
+
 - If using auto-registration, check controller logs for registration status
 - If using manual setup, verify `WEBHOOK_SECRET` matches GitHub settings
 - Check if port 8080 is accessible from GitHub (use `WEBHOOK_HOST` for public URL)
 - Review webhook delivery history in GitHub settings
 
 **Auto-registration not working:**
+
 - Ensure `WEBHOOK_HOST` is a publicly accessible URL
 - Verify token has `admin:repo_hook` or `admin:org_hook` scope
 - Check controller logs for API errors
 - The secret is persisted in `/data/webhook_secret` inside the container
 
 **Autoscaling not working:**
+
 - Ensure `runs-on` labels include `self-hosted`
 - Check controller health endpoint
 - Verify Docker socket is mounted correctly
 
 **Architecture issues:**
+
 - The Dockerfile automatically detects and downloads the correct runner binary
 
 ## Security Considerations
@@ -283,3 +291,4 @@ docker-compose logs -f gh-runner
 ## License
 
 Apache License 2.0 - see [LICENSE](LICENSE) file for details.
+<!-- EOF -->

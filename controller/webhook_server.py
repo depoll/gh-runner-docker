@@ -56,6 +56,12 @@ REQUIRED_LABELS = os.environ.get('REQUIRED_LABELS', '')
 MAX_RUNNERS = int(os.environ.get('MAX_RUNNERS', '10'))
 PORT = int(os.environ.get('PORT', '8080'))
 
+# Debug / diagnostics
+# If enabled, prints additional spawn diagnostics and tails runner container logs briefly.
+DEBUG_SPAWN_LOGS = os.environ.get('DEBUG_SPAWN_LOGS', '').lower() in ('1', 'true', 'yes', 'on')
+# If enabled, do not pass --rm to docker run, so failed containers remain inspectable.
+DEBUG_KEEP_RUNNER_CONTAINER = os.environ.get('DEBUG_KEEP_RUNNER_CONTAINER', '').lower() in ('1', 'true', 'yes', 'on')
+
 # Secret file path for persistence
 SECRET_FILE = Path('/data/webhook_secret')
 
@@ -375,13 +381,25 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
     # Remove any existing arch labels from the configured defaults
     base_labels = [l for l in RUNNER_LABELS.split(',') if l.lower() not in ('x64', 'amd64', 'arm64')]
     runner_labels = ','.join(base_labels + [arch_label])
+
+    if DEBUG_SPAWN_LOGS:
+        logger.info(
+            "Spawn details: job_id=%s job_name=%s requested_labels=%s host_arch=%s selected_arch=%s platform_args=%s runner_labels=%s",
+            job_id,
+            job_name,
+            labels,
+            host_machine,
+            arch_label,
+            ' '.join(platform_args) if platform_args else '(none)',
+            runner_labels,
+        )
     
     # Build docker command
-    cmd = [
-        'docker', 'run', '-d',
-        '--name', runner_name,
-        '--rm',  # Auto-remove when stopped
-    ] + platform_args + [
+    cmd = ['docker', 'run', '-d', '--name', runner_name]
+    if not DEBUG_KEEP_RUNNER_CONTAINER:
+        cmd += ['--rm']  # Auto-remove when stopped
+
+    cmd = cmd + platform_args + [
         '-e', f'GITHUB_URL={GITHUB_URL}',
         '-e', f'GITHUB_TOKEN={token}',
         '-e', f'RUNNER_NAME={runner_name}',
@@ -390,6 +408,16 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         '-v', '/var/run/docker.sock:/var/run/docker.sock',
         RUNNER_IMAGE
     ]
+
+    if DEBUG_SPAWN_LOGS:
+        # Never log the registration token.
+        redacted_cmd = []
+        for part in cmd:
+            if isinstance(part, str) and part.startswith('GITHUB_TOKEN='):
+                redacted_cmd.append('GITHUB_TOKEN=<redacted>')
+            else:
+                redacted_cmd.append(part)
+        logger.info("docker run command: %s", ' '.join(redacted_cmd))
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -403,6 +431,34 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
                     'started_at': time.time()
                 }
             logger.info(f"Spawned runner {runner_name} for job {job_id} ({job_name})")
+
+            if DEBUG_SPAWN_LOGS:
+                # Give the container a moment to start and emit early errors.
+                time.sleep(2)
+                try:
+                    ps = subprocess.run(
+                        ['docker', 'ps', '-a', '--filter', f'name={runner_name}', '--format', '{{.Status}}'],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    status_line = (ps.stdout or '').strip()
+                    if status_line:
+                        logger.info("Runner container status: %s", status_line)
+
+                    logs = subprocess.run(
+                        ['docker', 'logs', '--tail', '80', runner_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if logs.stdout.strip():
+                        logger.info("Runner logs (tail):\n%s", logs.stdout.rstrip())
+                    if logs.stderr.strip():
+                        logger.info("Runner logs stderr (tail):\n%s", logs.stderr.rstrip())
+                except Exception as log_exc:
+                    logger.debug(f"Failed to gather debug logs for {runner_name}: {log_exc}")
+
             return True
         else:
             logger.error(f"Failed to spawn runner: {result.stderr}")

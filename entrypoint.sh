@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 
 # Function to exchange PAT for registration token
 exchange_pat_for_token() {
@@ -329,9 +330,14 @@ if [ -n "$LABELS" ]; then
     CONFIG_CMD="$CONFIG_CMD --labels $LABELS"
 fi
 
-# Add runner group if specified
+# Add runner group if specified AND we're registering at org scope.
+# Passing --runnergroup for repo-level registration can prevent the runner from registering.
 if [ -n "$RUNNER_GROUP" ]; then
-    CONFIG_CMD="$CONFIG_CMD --runnergroup $RUNNER_GROUP"
+    if [[ "$GITHUB_URL" =~ github\.com/[^/]+/[^/]+/?$ ]]; then
+        echo "RUNNER_GROUP is set but GITHUB_URL looks like a repo URL; skipping --runnergroup"
+    else
+        CONFIG_CMD="$CONFIG_CMD --runnergroup $RUNNER_GROUP"
+    fi
 fi
 
 # Configure the runner
@@ -341,7 +347,23 @@ echo "Configuring GitHub Actions Runner..."
 export ACTIONS_RUNNER_HOOK_JOB_COMPLETED="/home/runner/cleanup-workspace.sh"
 echo "Workspace cleanup hook configured: $ACTIONS_RUNNER_HOOK_JOB_COMPLETED"
 
-eval $CONFIG_CMD
+config_log="/tmp/runner-config.log"
+if ! ( eval "$CONFIG_CMD" ) 2>&1 | tee "$config_log"; then
+    echo "ERROR: Runner configuration failed. Last 200 lines:" >&2
+    tail -n 200 "$config_log" >&2 || true
+    exit 1
+fi
+
+if [ -f ".runner" ]; then
+    echo "=== Runner Registration Summary ==="
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '"runnerId=" + (.runnerId|tostring) + " name=" + .name + " url=" + .gitHubUrl' .runner 2>/dev/null || true
+    else
+        echo "Registered runner metadata present in .runner"
+    fi
+else
+    echo "WARNING: .runner file not found after config.sh; runner may not have registered" >&2
+fi
 
 # Start the runner
 echo "Starting GitHub Actions Runner..."

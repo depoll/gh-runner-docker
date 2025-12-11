@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 
 # Ephemeral Runner Entrypoint Script
 # This script configures and runs a GitHub Actions runner in ephemeral mode
@@ -142,14 +143,37 @@ if [ -n "$RUNNER_LABELS" ]; then
     CONFIG_ARGS+=("--labels" "$RUNNER_LABELS")
 fi
 
-# Add runner group if specified
+# Add runner group if specified AND we're registering at org scope.
+# Passing --runnergroup for repo-level registration can prevent the runner from registering.
 if [ -n "$RUNNER_GROUP" ]; then
-    CONFIG_ARGS+=("--runnergroup" "$RUNNER_GROUP")
+    if [[ "$GITHUB_URL" =~ github\.com/[^/]+/[^/]+/?$ ]]; then
+        echo "RUNNER_GROUP is set but GITHUB_URL looks like a repo URL; skipping --runnergroup"
+    else
+        CONFIG_ARGS+=("--runnergroup" "$RUNNER_GROUP")
+    fi
 fi
 
 # Configure the runner
 echo "=== Configuring Ephemeral Runner ==="
-"${CONFIG_ARGS[@]}"
+
+config_log="/tmp/runner-config.log"
+if ! "${CONFIG_ARGS[@]}" 2>&1 | tee "$config_log"; then
+    echo "ERROR: Runner configuration failed. Last 200 lines:" >&2
+    tail -n 200 "$config_log" >&2 || true
+    exit 1
+fi
+
+# Print a small, safe summary of what got registered (if available)
+if [ -f ".runner" ]; then
+    echo "=== Runner Registration Summary ==="
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '"runnerId=" + (.runnerId|tostring) + " name=" + .name + " url=" + .gitHubUrl' .runner 2>/dev/null || true
+    else
+        echo "Registered runner metadata present in .runner"
+    fi
+else
+    echo "WARNING: .runner file not found after config.sh; runner may not have registered" >&2
+fi
 
 # Set post-job hook for workspace cleanup
 export ACTIONS_RUNNER_HOOK_JOB_COMPLETED="/home/runner/cleanup-workspace.sh"
