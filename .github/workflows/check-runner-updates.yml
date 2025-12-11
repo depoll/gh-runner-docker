@@ -18,6 +18,11 @@ jobs:
       packages: write
       pull-requests: write
 
+    env:
+      # gh CLI prefers GH_TOKEN; keep GITHUB_TOKEN for compatibility.
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -25,8 +30,22 @@ jobs:
       - name: Get latest GitHub runner version
         id: runner-version
         run: |
-          # Get the latest release from GitHub Actions runner repository
-          LATEST_VERSION=$(curl -s https://api.github.com/repos/actions/runner/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+          # Get the latest release from GitHub Actions runner repository.
+          # Use the workflow token to avoid unauthenticated rate limits.
+          LATEST_VERSION=$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/actions/runner/releases/latest \
+            | jq -r '.tag_name' \
+            | sed 's/^v//')
+
+          if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
+            echo "Unable to determine latest runner version; skipping." >&2
+            echo "latest_version=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
           
           # Get current version from Dockerfile
@@ -39,6 +58,12 @@ jobs:
       - name: Check if update is needed
         id: check-update
         run: |
+          if [ -z "${{ steps.runner-version.outputs.latest_version }}" ]; then
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+            echo "Latest version unavailable; skipping." 
+            exit 0
+          fi
+
           if [ "${{ steps.runner-version.outputs.latest_version }}" != "${{ steps.runner-version.outputs.current_version }}" ]; then
             echo "update_needed=true" >> $GITHUB_OUTPUT
             echo "Update needed: ${{ steps.runner-version.outputs.current_version }} -> ${{ steps.runner-version.outputs.latest_version }}"
@@ -54,37 +79,44 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           
-          # Create a new branch
           BRANCH_NAME="update-runner-${{ steps.runner-version.outputs.latest_version }}"
-          git checkout -b $BRANCH_NAME
+
+          # Create or update branch deterministically (safe to re-run).
+          git fetch origin main
+          git checkout -B "$BRANCH_NAME" origin/main
           
           # Update Dockerfile
           sed -i 's/ARG RUNNER_VERSION="[^"]*"/ARG RUNNER_VERSION="${{ steps.runner-version.outputs.latest_version }}"/' Dockerfile
           
-          # Update workflow file
-          sed -i 's/RUNNER_VERSION=[0-9.]*/RUNNER_VERSION=${{ steps.runner-version.outputs.latest_version }}/' .github/workflows/build-and-publish.yml
-          
           # Commit changes
-          git add Dockerfile .github/workflows/build-and-publish.yml
+          git add Dockerfile
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit; exiting." 
+            exit 0
+          fi
+
           git commit -m "Update GitHub Actions runner to v${{ steps.runner-version.outputs.latest_version }}"
           
           # Push branch
-          git push origin $BRANCH_NAME
+          git push --force-with-lease origin "$BRANCH_NAME"
           
-          # Create pull request
+          # Create pull request if it doesn't already exist
+          if gh pr view "$BRANCH_NAME" --json number --jq .number >/dev/null 2>&1; then
+            echo "PR already exists for $BRANCH_NAME; branch updated." 
+            exit 0
+          fi
+
           gh pr create \
             --title "Update GitHub Actions runner to v${{ steps.runner-version.outputs.latest_version }}" \
             --body "Automated update of GitHub Actions runner from v${{ steps.runner-version.outputs.current_version }} to v${{ steps.runner-version.outputs.latest_version }}.
 
           This PR includes:
           - Updated Dockerfile with new runner version
-          - Updated build workflow with new version
-          
+
           The new container image will be automatically built and published when this PR is merged." \
-            --head $BRANCH_NAME \
+            --head "$BRANCH_NAME" \
             --base main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Auto-merge if update is a patch/minor version
         if: steps.check-update.outputs.update_needed == 'true'
@@ -99,9 +131,7 @@ jobs:
           if [ "$CURRENT_MAJOR" == "$LATEST_MAJOR" ] && [ "$CURRENT_MINOR" == "$LATEST_MINOR" ]; then
             echo "Patch version update detected - will auto-merge"
             BRANCH_NAME="update-runner-${{ steps.runner-version.outputs.latest_version }}"
-            gh pr merge $BRANCH_NAME --auto --squash
+            gh pr merge "$BRANCH_NAME" --auto --squash || echo "Auto-merge could not be enabled; leaving PR open."
           else
             echo "Major/minor version update detected - manual review required"
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
