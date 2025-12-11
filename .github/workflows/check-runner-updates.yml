@@ -20,7 +20,6 @@ jobs:
 
     env:
       # gh CLI prefers GH_TOKEN; keep GITHUB_TOKEN for compatibility.
-      GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
 
     steps:
@@ -75,6 +74,8 @@ jobs:
       - name: Create Pull Request with version update
         if: steps.check-update.outputs.update_needed == 'true'
         run: |
+          export GH_TOKEN="$GITHUB_TOKEN"
+
           # Configure git
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
@@ -107,6 +108,7 @@ jobs:
             exit 0
           fi
 
+          set +e
           gh pr create \
             --title "Update GitHub Actions runner to v${{ steps.runner-version.outputs.latest_version }}" \
             --body "Automated update of GitHub Actions runner from v${{ steps.runner-version.outputs.current_version }} to v${{ steps.runner-version.outputs.latest_version }}.
@@ -117,10 +119,22 @@ jobs:
           The new container image will be automatically built and published when this PR is merged." \
             --head "$BRANCH_NAME" \
             --base main
+          exit_code=$?
+          set -e
+
+          # Some repositories disallow PR creation by the default workflow token.
+          # Treat it as a soft-fail so the scheduled workflow doesn't get disabled.
+          if [ "$exit_code" -ne 0 ]; then
+            echo "PR creation failed (exit $exit_code)." >&2
+            echo "If you want PRs auto-created, enable: Settings → Actions → General → 'Allow GitHub Actions to create and approve pull requests'." >&2
+            exit 0
+          fi
 
       - name: Auto-merge if update is a patch/minor version
         if: steps.check-update.outputs.update_needed == 'true'
         run: |
+          export GH_TOKEN="$GITHUB_TOKEN"
+
           # Extract version components
           CURRENT_MAJOR=$(echo "${{ steps.runner-version.outputs.current_version }}" | cut -d. -f1)
           CURRENT_MINOR=$(echo "${{ steps.runner-version.outputs.current_version }}" | cut -d. -f2)
