@@ -19,7 +19,10 @@ if [ -n "$WEBHOOK_DOMAIN" ] && [ -n "$LETSENCRYPT_EMAIL" ]; then
     # The ACME module should replace these later, but we need something present
     # for the first start.
     mkdir -p /etc/nginx/acme
-    chmod 700 /etc/nginx/acme || true
+    # ssl_certificate uses variables in our config, so nginx loads certs/keys at handshake
+    # from worker processes. Ensure the nginx user can read the bootstrap cert/key.
+    chgrp nginx /etc/nginx/acme 2>/dev/null || true
+    chmod 750 /etc/nginx/acme || true
 
     CERT_FILE="/etc/nginx/acme/fullchain.pem"
     KEY_FILE="/etc/nginx/acme/privkey.pem"
@@ -43,7 +46,10 @@ if [ -n "$WEBHOOK_DOMAIN" ] && [ -n "$LETSENCRYPT_EMAIL" ]; then
 
         mv "$KEY_FILE.tmp" "$KEY_FILE"
         mv "$CERT_FILE.tmp" "$CERT_FILE"
-        chmod 600 "$KEY_FILE" "$CERT_FILE" 2>/dev/null || true
+
+        # Make readable by nginx worker processes (group nginx)
+        chgrp nginx "$KEY_FILE" "$CERT_FILE" 2>/dev/null || true
+        chmod 640 "$KEY_FILE" "$CERT_FILE" 2>/dev/null || true
     fi
     
     echo "ACME module will automatically obtain and renew certificates"
