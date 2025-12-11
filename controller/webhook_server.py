@@ -53,6 +53,9 @@ WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '')
 RUNNER_IMAGE = os.environ.get('RUNNER_IMAGE', 'ghcr.io/depoll/gh-runner-docker:ephemeral')
 RUNNER_LABELS = os.environ.get('RUNNER_LABELS', 'self-hosted,linux')
 REQUIRED_LABELS = os.environ.get('REQUIRED_LABELS', '')
+# Jobs whose labels include any of these will be ignored.
+# Default skips macOS and Windows jobs, since this stack provides Linux runners.
+UNSUPPORTED_JOB_LABELS = os.environ.get('UNSUPPORTED_JOB_LABELS', 'macos,windows')
 MAX_RUNNERS = int(os.environ.get('MAX_RUNNERS', '10'))
 PORT = int(os.environ.get('PORT', '8080'))
 DOCKER_NETWORK = os.environ.get('DOCKER_NETWORK', '')
@@ -510,6 +513,30 @@ def labels_match(job_labels: list[str]) -> bool:
     return required.issubset(job_labels_lower)
 
 
+def job_is_supported(job_labels: list[str]) -> tuple[bool, str]:
+    """Return (supported, reason).
+
+    This autoscaler provides Linux runner containers. If a workflow_job requests
+    macOS or Windows via labels, it can never match these runners, so we skip it.
+    """
+    labels_lower = {str(label).strip().lower() for label in (job_labels or []) if str(label).strip()}
+
+    unsupported = {
+        label.strip().lower()
+        for label in (UNSUPPORTED_JOB_LABELS or '').split(',')
+        if label.strip()
+    }
+
+    if not unsupported:
+        return True, ""
+
+    hit = sorted(labels_lower.intersection(unsupported))
+    if hit:
+        return False, f"requested unsupported labels: {hit}"
+
+    return True, ""
+
+
 class WebhookHandler(http.server.BaseHTTPRequestHandler):
     """HTTP request handler for GitHub webhooks."""
     
@@ -608,6 +635,13 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         logger.info(f"Received workflow_job event: action={action}, job_id={job_id}, name={job_name}")
         
         if action == 'queued':
+            supported, reason = job_is_supported(job_labels)
+            if not supported:
+                logger.info(f"Job {job_id} labels {job_labels} not supported ({reason}); ignoring")
+                self.send_response(200)
+                self.end_headers()
+                return
+
             # Check if labels match
             if not labels_match(job_labels):
                 logger.info(f"Job {job_id} labels {job_labels} don't match required labels, ignoring")

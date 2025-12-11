@@ -41,7 +41,7 @@ trap cleanup EXIT SIGTERM SIGINT
 
 # Start containerd first
 echo "Starting containerd..."
-sudo containerd &
+containerd &
 sleep 3
 
 # Start Docker daemon for Docker-in-Docker
@@ -54,14 +54,14 @@ test_docker_storage() {
     echo "Testing storage driver: $driver"
     
     # Kill any existing dockerd
-    sudo pkill dockerd 2>/dev/null || true
+    pkill dockerd 2>/dev/null || true
     sleep 2
     
     # Try to start with the specified driver
     if [ -n "$opts" ]; then
-        sudo dockerd --host=unix:///var/run/docker.sock --storage-driver=$driver $opts &
+        dockerd --host=unix:///var/run/docker.sock --storage-driver=$driver $opts &
     else
-        sudo dockerd --host=unix:///var/run/docker.sock --storage-driver=$driver &
+        dockerd --host=unix:///var/run/docker.sock --storage-driver=$driver &
     fi
     
     local dockerd_pid=$!
@@ -73,7 +73,7 @@ test_docker_storage() {
         return 0
     else
         echo "Failed to start Docker with $driver storage driver"
-        sudo kill $dockerd_pid 2>/dev/null || true
+        kill $dockerd_pid 2>/dev/null || true
         return 1
     fi
 }

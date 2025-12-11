@@ -70,16 +70,17 @@ RUN chmod +x /entrypoint.sh
 COPY cleanup-workspace.sh /home/runner/cleanup-workspace.sh
 RUN chmod +x /home/runner/cleanup-workspace.sh
 
-# Switch to runner user
-USER runner
-
 # Set environment variables with defaults
 ENV GITHUB_URL=""
-ENV GITHUB_TOKEN=""
 ENV RUNNER_NAME_PREFIX="runner"
 ENV RUNNER_WORKDIR="_work"
 ENV RUNNER_LABELS=""
 ENV RUNNER_GROUP=""
 ENV DEPLOYMENT_ID=""
+
+# Allow the runner to run as root inside the container.
+# This avoids reliance on sudo (which may be blocked by nosuid) while still
+# enabling Docker-in-Docker startup.
+ENV RUNNER_ALLOW_RUNASROOT="1"
 
 ENTRYPOINT ["/entrypoint.sh"]
