@@ -80,8 +80,8 @@ services:
       # Optional: Debugging
       DEBUG_SPAWN_LOGS: ${DEBUG_SPAWN_LOGS:-}
       DEBUG_KEEP_RUNNER_CONTAINER: ${DEBUG_KEEP_RUNNER_CONTAINER:-}
-      DEBUG_SPAWN_LOG_TAIL_LINES: ${DEBUG_SPAWN_LOG_TAIL_LINES:-}
-      DEBUG_SPAWN_LOG_SAMPLE_DELAYS: ${DEBUG_SPAWN_LOG_SAMPLE_DELAYS:-}
+      DEBUG_SPAWN_LOG_TAIL_LINES: ${DEBUG_SPAWN_LOG_TAIL_LINES:-400}
+      DEBUG_SPAWN_LOG_SAMPLE_DELAYS: ${DEBUG_SPAWN_LOG_SAMPLE_DELAYS:-25,70}
     volumes:
       # SECURITY NOTE: Mounting the Docker socket gives the controller full control over
       # the host's Docker daemon. For production, consider using a Docker socket proxy

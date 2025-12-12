@@ -45,6 +45,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == '':
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return default
+
+
+def _env_csv_ints(name: str, default: list[int]) -> list[int]:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == '':
+        return default
+    values: list[int] = []
+    for part in raw.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            values.append(int(part))
+        except ValueError:
+            logger.warning("Ignoring invalid %s entry: %r", name, part)
+    return values or default
+
 # Configuration
 GITHUB_URL = os.environ.get('GITHUB_URL', '')
 GITHUB_ACCESS_TOKEN = os.environ.get('GITHUB_ACCESS_TOKEN', '')
@@ -72,12 +99,8 @@ DEBUG_SPAWN_LOGS = os.environ.get('DEBUG_SPAWN_LOGS', '').lower() in ('1', 'true
 DEBUG_KEEP_RUNNER_CONTAINER = os.environ.get('DEBUG_KEEP_RUNNER_CONTAINER', '').lower() in ('1', 'true', 'yes', 'on')
 
 # Debug spawn log sampling controls (only used when DEBUG_SPAWN_LOGS is enabled)
-DEBUG_SPAWN_LOG_TAIL_LINES = int(os.environ.get('DEBUG_SPAWN_LOG_TAIL_LINES', '400'))
-DEBUG_SPAWN_LOG_SAMPLE_DELAYS = [
-    int(x)
-    for x in os.environ.get('DEBUG_SPAWN_LOG_SAMPLE_DELAYS', '25,70').split(',')
-    if x.strip().isdigit()
-]
+DEBUG_SPAWN_LOG_TAIL_LINES = _env_int('DEBUG_SPAWN_LOG_TAIL_LINES', 400)
+DEBUG_SPAWN_LOG_SAMPLE_DELAYS = _env_csv_ints('DEBUG_SPAWN_LOG_SAMPLE_DELAYS', [25, 70])
 
 # Secret file path for persistence
 SECRET_FILE = Path('/data/webhook_secret')
