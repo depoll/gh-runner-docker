@@ -683,6 +683,24 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
     if RUNNER_HTTP_PROXY or RUNNER_HTTPS_PROXY or RUNNER_ALL_PROXY:
         cmd += ['--add-host', 'host.docker.internal:host-gateway']
 
+    # Proxies can accidentally break internal connectivity.
+    # In particular, the Docker CLI inside the runner may respect HTTP(S)_PROXY and try to
+    # reach the DinD sidecar (DOCKER_HOST=tcp://...) via the proxy, which fails.
+    # Always add a safe NO_PROXY baseline when proxies are enabled.
+    effective_no_proxy_parts: list[str] = []
+    if RUNNER_NO_PROXY:
+        effective_no_proxy_parts += [p.strip() for p in RUNNER_NO_PROXY.split(',') if p.strip()]
+    if RUNNER_HTTP_PROXY or RUNNER_HTTPS_PROXY or RUNNER_ALL_PROXY:
+        effective_no_proxy_parts += ['localhost', '127.0.0.1', '::1']
+    if dind_sidecar_name:
+        effective_no_proxy_parts.append(dind_sidecar_name)
+    # De-dupe while preserving order.
+    seen_no_proxy: set[str] = set()
+    effective_no_proxy = ','.join(
+        p for p in effective_no_proxy_parts
+        if not (p in seen_no_proxy or seen_no_proxy.add(p))
+    )
+
     # Build proxy env list (both upper/lower for compatibility).
     proxy_env: list[str] = []
     if RUNNER_HTTP_PROXY:
@@ -691,8 +709,8 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         proxy_env += ['-e', f'HTTPS_PROXY={RUNNER_HTTPS_PROXY}', '-e', f'https_proxy={RUNNER_HTTPS_PROXY}']
     if RUNNER_ALL_PROXY:
         proxy_env += ['-e', f'ALL_PROXY={RUNNER_ALL_PROXY}', '-e', f'all_proxy={RUNNER_ALL_PROXY}']
-    if RUNNER_NO_PROXY:
-        proxy_env += ['-e', f'NO_PROXY={RUNNER_NO_PROXY}', '-e', f'no_proxy={RUNNER_NO_PROXY}']
+    if effective_no_proxy:
+        proxy_env += ['-e', f'NO_PROXY={effective_no_proxy}', '-e', f'no_proxy={effective_no_proxy}']
 
     cmd = cmd + platform_args + [
         '-e', f'GITHUB_URL={GITHUB_URL}',
