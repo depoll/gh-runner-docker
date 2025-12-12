@@ -130,6 +130,60 @@ active_runners = {}
 runners_lock = threading.Lock()
 
 
+_binfmt_lock = threading.Lock()
+_binfmt_amd64_ok: bool | None = None
+
+
+def _ensure_amd64_emulation_ready() -> bool:
+    """Return True if linux/amd64 containers can execute on this host.
+
+    On ARM hosts, attempting to run an amd64 container without binfmt/qemu-user
+    support typically fails with: "exec /entrypoint.sh: exec format error".
+    """
+    global _binfmt_amd64_ok
+
+    with _binfmt_lock:
+        if _binfmt_amd64_ok is not None:
+            return _binfmt_amd64_ok
+
+        try:
+            probe = subprocess.run(
+                [
+                    'docker', 'run', '--rm',
+                    '--platform', 'linux/amd64',
+                    'busybox:1.36.1',
+                    'echo', 'ok',
+                ],
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+
+            if probe.returncode == 0:
+                _binfmt_amd64_ok = True
+                return True
+
+            stderr = (probe.stderr or '').strip()
+            stdout = (probe.stdout or '').strip()
+            logger.error(
+                "linux/amd64 emulation probe failed (returncode=%s). stdout=%r stderr=%r",
+                probe.returncode,
+                stdout,
+                stderr,
+            )
+        except Exception as e:
+            logger.error("linux/amd64 emulation probe errored: %s", e)
+
+        logger.error(
+            "Cannot run linux/amd64 containers on this host. If you're on ARM and expecting x64 jobs, "
+            "you likely need to (re)install binfmt/qemu-user emulation. Common fix: "
+            "`docker run --privileged --rm tonistiigi/binfmt --install amd64`",
+        )
+
+        _binfmt_amd64_ok = False
+        return False
+
+
 # Note: This module requires Python 3.10+ for PEP 604 union type syntax (X | Y)
 def parse_github_url(url: str) -> tuple[str, str | None]:
     """
@@ -448,6 +502,10 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
 
     # Optional: separate DinD sidecar (keeps a DinD boundary but avoids running dockerd under emulation).
     emulated_amd64_on_arm = is_host_arm and platform_args == ['--platform', 'linux/amd64']
+
+    # Preflight: make sure amd64 containers can execute at all.
+    if emulated_amd64_on_arm and not _ensure_amd64_emulation_ready():
+        return False
     use_dind_sidecar = False
     if not use_host_docker:
         if RUNNER_DIND_SIDECAR in ('1', 'true', 'yes', 'on'):
