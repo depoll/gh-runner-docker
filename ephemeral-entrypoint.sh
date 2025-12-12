@@ -46,23 +46,39 @@ configure_iptables_backend() {
     iptables_nft="$(command -v iptables-nft 2>/dev/null || true)"
     iptables_legacy="$(command -v iptables-legacy 2>/dev/null || true)"
 
-    # Prefer nft if it can talk to the kernel NAT table.
-    if [ -n "$iptables_nft" ] && "$iptables_nft" -t nat -L >/dev/null 2>&1; then
-        update-alternatives --set iptables "$iptables_nft" >/dev/null 2>&1 || true
-        local ip6tables_nft
-        ip6tables_nft="$(command -v ip6tables-nft 2>/dev/null || true)"
-        if [ -n "$ip6tables_nft" ]; then
-            update-alternatives --set ip6tables "$ip6tables_nft" >/dev/null 2>&1 || true
-        fi
-    elif [ -n "$iptables_legacy" ] && "$iptables_legacy" -t nat -L >/dev/null 2>&1; then
-        update-alternatives --set iptables "$iptables_legacy" >/dev/null 2>&1 || true
-        local ip6tables_legacy
-        ip6tables_legacy="$(command -v ip6tables-legacy 2>/dev/null || true)"
-        if [ -n "$ip6tables_legacy" ]; then
-            update-alternatives --set ip6tables "$ip6tables_legacy" >/dev/null 2>&1 || true
+    # Prefer legacy by default for DinD; nft has been observed to fail in some nested/emulated environments.
+    # Override with DOCKER_IPTABLES_BACKEND=nft if you want to force nft.
+    local preferred="${DOCKER_IPTABLES_BACKEND:-legacy}"
+
+    if [ "$preferred" = "nft" ]; then
+        if [ -n "$iptables_nft" ]; then
+            update-alternatives --set iptables "$iptables_nft" >/dev/null 2>&1 || true
+            local ip6tables_nft
+            ip6tables_nft="$(command -v ip6tables-nft 2>/dev/null || true)"
+            if [ -n "$ip6tables_nft" ]; then
+                update-alternatives --set ip6tables "$ip6tables_nft" >/dev/null 2>&1 || true
+            fi
         fi
     else
-        echo "WARNING: Neither iptables-nft nor iptables-legacy appears functional (nat table unavailable)" >&2
+        if [ -n "$iptables_legacy" ]; then
+            update-alternatives --set iptables "$iptables_legacy" >/dev/null 2>&1 || true
+            local ip6tables_legacy
+            ip6tables_legacy="$(command -v ip6tables-legacy 2>/dev/null || true)"
+            if [ -n "$ip6tables_legacy" ]; then
+                update-alternatives --set ip6tables "$ip6tables_legacy" >/dev/null 2>&1 || true
+            fi
+        fi
+    fi
+
+    # Sanity probe: if the chosen backend can't list nat, try the other.
+    if ! iptables -t nat -L >/dev/null 2>&1; then
+        if [ -n "$iptables_legacy" ] && "$iptables_legacy" -t nat -L >/dev/null 2>&1; then
+            update-alternatives --set iptables "$iptables_legacy" >/dev/null 2>&1 || true
+        elif [ -n "$iptables_nft" ] && "$iptables_nft" -t nat -L >/dev/null 2>&1; then
+            update-alternatives --set iptables "$iptables_nft" >/dev/null 2>&1 || true
+        else
+            echo "WARNING: Neither iptables backend can access the nat table (seccomp/kernel restriction?)" >&2
+        fi
     fi
 
     local arptables_legacy

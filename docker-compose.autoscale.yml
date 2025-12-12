@@ -75,9 +75,9 @@ services:
       # Optional: Docker network for runners
       DOCKER_NETWORK: ${DOCKER_NETWORK:-gh-runner-network}
       # Optional: Prefer host Docker daemon (mount /var/run/docker.sock into runner)
-      # - empty: controller auto-selects (defaults to host docker for amd64-on-arm emulation)
-      # - true: always use host docker
-      # - false: never use host docker (force DinD)
+      # - empty: default (DinD)
+      # - true: use host docker.sock
+      # - false: force DinD
       RUNNER_USE_HOST_DOCKER: ${RUNNER_USE_HOST_DOCKER:-}
       # Optional: Force a specific dockerd storage driver inside runner containers
       # (useful on kernels where overlay2 and fuse-overlayfs are unreliable)

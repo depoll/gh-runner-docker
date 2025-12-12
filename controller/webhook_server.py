@@ -92,8 +92,8 @@ PORT = int(os.environ.get('PORT', '8080'))
 DOCKER_NETWORK = os.environ.get('DOCKER_NETWORK', '')
 RUNNER_DOCKER_STORAGE_DRIVER = os.environ.get('RUNNER_DOCKER_STORAGE_DRIVER', '').strip()
 RUNNER_MOUNT_LIB_MODULES = os.environ.get('RUNNER_MOUNT_LIB_MODULES', 'true').lower() in ('1', 'true', 'yes', 'on')
-RUNNER_USE_HOST_DOCKER = os.environ.get('RUNNER_USE_HOST_DOCKER', '').lower() in ('1', 'true', 'yes', 'on')
-RUNNER_USE_HOST_DOCKER_DISABLE = os.environ.get('RUNNER_USE_HOST_DOCKER', '').lower() in ('0', 'false', 'no', 'off')
+_runner_use_host_docker_raw = os.environ.get('RUNNER_USE_HOST_DOCKER', '').strip().lower()
+RUNNER_USE_HOST_DOCKER = _runner_use_host_docker_raw in ('1', 'true', 'yes', 'on')
 
 # Debug / diagnostics
 # If enabled, prints additional spawn diagnostics and tails runner container logs briefly.
@@ -423,9 +423,9 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
     # Docker strategy:
     # - DinD is fragile on some hosts (especially amd64 under emulation on ARM).
     # - Prefer using the host Docker daemon via /var/run/docker.sock in that case.
+    # Default: Docker-in-Docker. Using host docker.sock is an explicit opt-in
+    # because it changes the security model of the runner.
     use_host_docker = RUNNER_USE_HOST_DOCKER
-    if not RUNNER_USE_HOST_DOCKER_DISABLE and is_host_arm and platform_args == ['--platform', 'linux/amd64']:
-        use_host_docker = True
 
     # Storage driver selection for Docker-in-Docker inside the runner container.
     # When running an amd64 runner under emulation on ARM hosts, overlay2 and fuse-overlayfs
