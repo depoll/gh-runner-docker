@@ -174,6 +174,10 @@ That's it! The stack will:
 | `DEBUG_SPAWN_LOGS` | No | - | Controller: log spawn details and tail runner logs |
 | `DEBUG_KEEP_RUNNER_CONTAINER` | No | - | Controller: keep failed runner containers (disables `--rm`) |
 | `DEBUG_DOTNET_DUMPS` | No | - | Runner: enable .NET crash minidumps under `/tmp/dotnet-dumps` (use with `DEBUG_KEEP_RUNNER_CONTAINER=true`) |
+| `RUNNER_HTTPS_PROXY` | No | - | Controller: pass `HTTPS_PROXY/https_proxy` into runner containers (work around egress blocks) |
+| `RUNNER_HTTP_PROXY` | No | - | Controller: pass `HTTP_PROXY/http_proxy` into runner containers |
+| `RUNNER_ALL_PROXY` | No | - | Controller: pass `ALL_PROXY/all_proxy` into runner containers |
+| `RUNNER_NO_PROXY` | No | - | Controller: pass `NO_PROXY/no_proxy` into runner containers |
 
 > **ARM hosts + `runs-on: …, x64`**: The controller runs the runner container as `linux/amd64` under emulation (QEMU).
 

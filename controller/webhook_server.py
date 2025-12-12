@@ -100,6 +100,13 @@ RUNNER_USE_HOST_DOCKER = _runner_use_host_docker_raw in ('1', 'true', 'yes', 'on
 RUNNER_DIND_SIDECAR = os.environ.get('RUNNER_DIND_SIDECAR', 'auto').strip().lower()
 RUNNER_DIND_IMAGE = os.environ.get('RUNNER_DIND_IMAGE', 'docker:27-dind').strip() or 'docker:27-dind'
 
+# Optional: proxy settings to pass into runner containers.
+# Useful when certain upstreams (e.g., dl.google.com) block cloud provider IP ranges.
+RUNNER_HTTP_PROXY = os.environ.get('RUNNER_HTTP_PROXY', '').strip()
+RUNNER_HTTPS_PROXY = os.environ.get('RUNNER_HTTPS_PROXY', '').strip()
+RUNNER_NO_PROXY = os.environ.get('RUNNER_NO_PROXY', '').strip()
+RUNNER_ALL_PROXY = os.environ.get('RUNNER_ALL_PROXY', '').strip()
+
 # On ARM hosts, jobs frequently request x64/amd64. This stack emulates linux/amd64 via QEMU.
 # Note: The GitHub runner is a .NET app and can be unstable under emulation in some environments.
 # We apply extra .NET safety env vars for emulated runner containers.
@@ -568,6 +575,17 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
     if DOCKER_NETWORK:
         cmd += ['--network', DOCKER_NETWORK]
 
+    # Build proxy env list (both upper/lower for compatibility).
+    proxy_env: list[str] = []
+    if RUNNER_HTTP_PROXY:
+        proxy_env += ['-e', f'HTTP_PROXY={RUNNER_HTTP_PROXY}', '-e', f'http_proxy={RUNNER_HTTP_PROXY}']
+    if RUNNER_HTTPS_PROXY:
+        proxy_env += ['-e', f'HTTPS_PROXY={RUNNER_HTTPS_PROXY}', '-e', f'https_proxy={RUNNER_HTTPS_PROXY}']
+    if RUNNER_ALL_PROXY:
+        proxy_env += ['-e', f'ALL_PROXY={RUNNER_ALL_PROXY}', '-e', f'all_proxy={RUNNER_ALL_PROXY}']
+    if RUNNER_NO_PROXY:
+        proxy_env += ['-e', f'NO_PROXY={RUNNER_NO_PROXY}', '-e', f'no_proxy={RUNNER_NO_PROXY}']
+
     cmd = cmd + platform_args + [
         '-e', f'GITHUB_URL={GITHUB_URL}',
         '-e', f'GITHUB_TOKEN={token}',
@@ -576,6 +594,7 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         '-e', f'JOB_ID={job_id}',
         '-e', f'RUNNER_USE_HOST_DOCKER={str(use_host_docker).lower()}',
         *(['-e', 'DEBUG_DOTNET_DUMPS=true'] if DEBUG_DOTNET_DUMPS else []),
+        *proxy_env,
         # If set, the runner will use an external Docker daemon (DinD sidecar) via TCP.
         *(['-e', f'DOCKER_HOST={dind_docker_host}'] if dind_docker_host else []),
         # Important: DOCKER_TLS_VERIFY is enabled if set to any non-empty value.
@@ -985,6 +1004,7 @@ def main():
     logger.info(f"Pull runner image before spawn: {PULL_RUNNER_IMAGE}")
     logger.info(f"Max runners: {MAX_RUNNERS}")
     logger.info(f"Docker network for runners: {DOCKER_NETWORK or '(default)'}")
+    logger.info(f"Runner proxy enabled: {bool(RUNNER_HTTP_PROXY or RUNNER_HTTPS_PROXY or RUNNER_ALL_PROXY)}")
     logger.info(f"DEBUG_SPAWN_LOGS: {DEBUG_SPAWN_LOGS}")
     logger.info(f"DEBUG_KEEP_RUNNER_CONTAINER: {DEBUG_KEEP_RUNNER_CONTAINER}")
     logger.info(f"DEBUG_DOTNET_DUMPS: {DEBUG_DOTNET_DUMPS}")
