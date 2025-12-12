@@ -74,9 +74,14 @@ services:
       RUNNER_IMAGE: ${RUNNER_IMAGE:-ghcr.io/depoll/gh-runner-docker:ephemeral}
       # Optional: Docker network for runners
       DOCKER_NETWORK: ${DOCKER_NETWORK:-gh-runner-network}
+      # Optional: Force a specific dockerd storage driver inside runner containers
+      # (useful on kernels where overlay2 and fuse-overlayfs are unreliable)
+      RUNNER_DOCKER_STORAGE_DRIVER: ${RUNNER_DOCKER_STORAGE_DRIVER:-}
       # Optional: Debugging
       DEBUG_SPAWN_LOGS: ${DEBUG_SPAWN_LOGS:-}
       DEBUG_KEEP_RUNNER_CONTAINER: ${DEBUG_KEEP_RUNNER_CONTAINER:-}
+      DEBUG_SPAWN_LOG_TAIL_LINES: ${DEBUG_SPAWN_LOG_TAIL_LINES:-}
+      DEBUG_SPAWN_LOG_SAMPLE_DELAYS: ${DEBUG_SPAWN_LOG_SAMPLE_DELAYS:-}
     volumes:
       # SECURITY NOTE: Mounting the Docker socket gives the controller full control over
       # the host's Docker daemon. For production, consider using a Docker socket proxy

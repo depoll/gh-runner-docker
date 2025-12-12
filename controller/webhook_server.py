@@ -63,12 +63,21 @@ PULL_RUNNER_IMAGE = os.environ.get('PULL_RUNNER_IMAGE', 'true').lower() in ('1',
 MAX_RUNNERS = int(os.environ.get('MAX_RUNNERS', '10'))
 PORT = int(os.environ.get('PORT', '8080'))
 DOCKER_NETWORK = os.environ.get('DOCKER_NETWORK', '')
+RUNNER_DOCKER_STORAGE_DRIVER = os.environ.get('RUNNER_DOCKER_STORAGE_DRIVER', '').strip()
 
 # Debug / diagnostics
 # If enabled, prints additional spawn diagnostics and tails runner container logs briefly.
 DEBUG_SPAWN_LOGS = os.environ.get('DEBUG_SPAWN_LOGS', '').lower() in ('1', 'true', 'yes', 'on')
 # If enabled, do not pass --rm to docker run, so failed containers remain inspectable.
 DEBUG_KEEP_RUNNER_CONTAINER = os.environ.get('DEBUG_KEEP_RUNNER_CONTAINER', '').lower() in ('1', 'true', 'yes', 'on')
+
+# Debug spawn log sampling controls (only used when DEBUG_SPAWN_LOGS is enabled)
+DEBUG_SPAWN_LOG_TAIL_LINES = int(os.environ.get('DEBUG_SPAWN_LOG_TAIL_LINES', '400'))
+DEBUG_SPAWN_LOG_SAMPLE_DELAYS = [
+    int(x)
+    for x in os.environ.get('DEBUG_SPAWN_LOG_SAMPLE_DELAYS', '25,70').split(',')
+    if x.strip().isdigit()
+]
 
 # Secret file path for persistence
 SECRET_FILE = Path('/data/webhook_secret')
@@ -384,6 +393,13 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         if is_host_arm:
             platform_args = ['--platform', 'linux/amd64']
             logger.info(f"Job {job_id} requested amd64/x64 on {host_machine} host, using emulation")
+
+    # Storage driver selection for Docker-in-Docker inside the runner container.
+    # When running an amd64 runner under emulation on ARM hosts, overlay2 and fuse-overlayfs
+    # are frequently unreliable; vfs is slower but typically the most consistent.
+    docker_storage_driver = RUNNER_DOCKER_STORAGE_DRIVER
+    if not docker_storage_driver and is_host_arm and platform_args == ['--platform', 'linux/amd64']:
+        docker_storage_driver = 'vfs'
     
     # Adjust RUNNER_LABELS to match architecture
     # Remove any existing arch labels from the configured defaults
@@ -441,6 +457,9 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         RUNNER_IMAGE
     ]
 
+    if docker_storage_driver:
+        cmd = cmd[:-2] + ['-e', f'DOCKER_STORAGE_DRIVER={docker_storage_driver}'] + cmd[-2:]
+
     if DEBUG_SPAWN_LOGS:
         # Never log the registration token.
         redacted_cmd = []
@@ -465,32 +484,36 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
             logger.info(f"Spawned runner {runner_name} for job {job_id} ({job_name})")
 
             if DEBUG_SPAWN_LOGS:
-                # Give the container a moment to start and emit early errors.
-                # Docker-in-Docker + runner registration often take a few seconds.
-                time.sleep(8)
-                try:
-                    ps = subprocess.run(
-                        ['docker', 'ps', '-a', '--filter', f'name={runner_name}', '--format', '{{.Status}}'],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                    )
-                    status_line = (ps.stdout or '').strip()
-                    if status_line:
-                        logger.info("Runner container status: %s", status_line)
+                # Docker-in-Docker + runner registration can take tens of seconds,
+                # especially under emulation. Sample logs a few times.
+                start = time.time()
+                for delay in (DEBUG_SPAWN_LOG_SAMPLE_DELAYS or [25, 70]):
+                    sleep_for = max(0, delay - (time.time() - start))
+                    if sleep_for:
+                        time.sleep(sleep_for)
+                    try:
+                        ps = subprocess.run(
+                            ['docker', 'ps', '-a', '--filter', f'name={runner_name}', '--format', '{{.Status}}'],
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                        )
+                        status_line = (ps.stdout or '').strip()
+                        if status_line:
+                            logger.info("Runner container status (@~%ss): %s", int(delay), status_line)
 
-                    logs = subprocess.run(
-                        ['docker', 'logs', '--tail', '200', runner_name],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                    )
-                    if logs.stdout.strip():
-                        logger.info("Runner logs (tail):\n%s", logs.stdout.rstrip())
-                    if logs.stderr.strip():
-                        logger.info("Runner logs stderr (tail):\n%s", logs.stderr.rstrip())
-                except Exception as log_exc:
-                    logger.debug(f"Failed to gather debug logs for {runner_name}: {log_exc}")
+                        logs = subprocess.run(
+                            ['docker', 'logs', '--tail', str(DEBUG_SPAWN_LOG_TAIL_LINES), runner_name],
+                            capture_output=True,
+                            text=True,
+                            timeout=15,
+                        )
+                        if logs.stdout.strip():
+                            logger.info("Runner logs (tail @~%ss):\n%s", int(delay), logs.stdout.rstrip())
+                        if logs.stderr.strip():
+                            logger.info("Runner logs stderr (tail @~%ss):\n%s", int(delay), logs.stderr.rstrip())
+                    except Exception as log_exc:
+                        logger.debug(f"Failed to gather debug logs for {runner_name}: {log_exc}")
 
             return True
         else:

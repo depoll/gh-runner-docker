@@ -90,19 +90,23 @@ test_docker_storage() {
     fi
     
     local dockerd_pid=$!
-    sleep 8
-    
-    # Check if Docker started successfully
-    if timeout 3 docker info >/dev/null 2>&1; then
-        echo "Successfully started Docker with $driver storage driver"
-        return 0
-    else
-        echo "Failed to start Docker with $driver storage driver"
-        echo "Last 120 lines of $dockerd_log:" >&2
-        tail -n 120 "$dockerd_log" >&2 || true
-        kill $dockerd_pid 2>/dev/null || true
-        return 1
-    fi
+
+    # Check if Docker started successfully.
+    # Under emulation or on slower kernels, dockerd can take a while to become responsive.
+    local deadline=$((SECONDS + 45))
+    while [ $SECONDS -lt $deadline ]; do
+        if timeout 3 docker info >/dev/null 2>&1; then
+            echo "Successfully started Docker with $driver storage driver"
+            return 0
+        fi
+        sleep 2
+    done
+
+    echo "Failed to start Docker with $driver storage driver"
+    echo "Last 120 lines of $dockerd_log:" >&2
+    tail -n 120 "$dockerd_log" >&2 || true
+    kill $dockerd_pid 2>/dev/null || true
+    return 1
 }
 
 supports_overlay2() {
