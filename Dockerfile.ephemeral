@@ -27,6 +27,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     lsb-release \
     fuse-overlayfs \
     iptables \
+    kmod \
     && true
 
 # Install Docker (Docker-in-Docker)

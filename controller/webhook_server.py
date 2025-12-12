@@ -91,6 +91,7 @@ MAX_RUNNERS = int(os.environ.get('MAX_RUNNERS', '10'))
 PORT = int(os.environ.get('PORT', '8080'))
 DOCKER_NETWORK = os.environ.get('DOCKER_NETWORK', '')
 RUNNER_DOCKER_STORAGE_DRIVER = os.environ.get('RUNNER_DOCKER_STORAGE_DRIVER', '').strip()
+RUNNER_MOUNT_LIB_MODULES = os.environ.get('RUNNER_MOUNT_LIB_MODULES', 'true').lower() in ('1', 'true', 'yes', 'on')
 
 # Debug / diagnostics
 # If enabled, prints additional spawn diagnostics and tails runner container logs briefly.
@@ -476,6 +477,9 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         '-e', f'RUNNER_NAME={runner_name}',
         '-e', f'RUNNER_LABELS={runner_labels}',
         '-e', f'JOB_ID={job_id}',
+        # Allow the runner container to access host kernel modules for modprobe.
+        # This can be required for Docker NAT (iptable_nat) in Docker-in-Docker.
+        *(['-v', '/lib/modules:/lib/modules:ro'] if RUNNER_MOUNT_LIB_MODULES else []),
         '--privileged',  # Required for Docker-in-Docker
         RUNNER_IMAGE
     ]

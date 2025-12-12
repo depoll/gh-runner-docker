@@ -4,6 +4,22 @@ set -e
 set -o pipefail
 
 configure_iptables_backend() {
+    # Best-effort: load common netfilter modules needed for Docker NAT.
+    # This only works if the container can access host modules (mount /lib/modules)
+    # and has permission to load modules (privileged gives CAP_SYS_MODULE).
+    if command -v modprobe >/dev/null 2>&1; then
+        modprobe br_netfilter >/dev/null 2>&1 || true
+        modprobe nf_conntrack >/dev/null 2>&1 || true
+        modprobe nf_nat >/dev/null 2>&1 || true
+        modprobe ip_tables >/dev/null 2>&1 || true
+        modprobe iptable_nat >/dev/null 2>&1 || true
+        modprobe iptable_filter >/dev/null 2>&1 || true
+        modprobe ip6_tables >/dev/null 2>&1 || true
+        modprobe ip6table_nat >/dev/null 2>&1 || true
+        modprobe ip6table_filter >/dev/null 2>&1 || true
+        modprobe nf_tables >/dev/null 2>&1 || true
+    fi
+
     # Docker uses iptables to set up networking/NAT. Some environments don't support
     # nftables (iptables-nft), while others don't support legacy iptables (ip_tables).
     # Choose the backend that actually works on this kernel.

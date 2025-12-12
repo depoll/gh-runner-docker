@@ -77,6 +77,8 @@ services:
       # Optional: Force a specific dockerd storage driver inside runner containers
       # (useful on kernels where overlay2 and fuse-overlayfs are unreliable)
       RUNNER_DOCKER_STORAGE_DRIVER: ${RUNNER_DOCKER_STORAGE_DRIVER:-}
+      # Optional: Mount host /lib/modules into runner containers (helps modprobe iptable_nat)
+      RUNNER_MOUNT_LIB_MODULES: ${RUNNER_MOUNT_LIB_MODULES:-true}
       # Optional: Debugging
       DEBUG_SPAWN_LOGS: ${DEBUG_SPAWN_LOGS:-}
       DEBUG_KEEP_RUNNER_CONTAINER: ${DEBUG_KEEP_RUNNER_CONTAINER:-}
