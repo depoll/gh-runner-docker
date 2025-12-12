@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 GitHub Actions Webhook Controller for Autoscaling Ephemeral Runners
-
 This server receives workflow_job webhook events from GitHub and automatically
 spawns ephemeral runner containers to handle jobs. It supports:
 - Automatic webhook registration with GitHub (generates its own secret)
@@ -110,6 +109,7 @@ RUNNER_DIND_IMAGE = os.environ.get('RUNNER_DIND_IMAGE', 'docker:27-dind').strip(
 DEBUG_SPAWN_LOGS = os.environ.get('DEBUG_SPAWN_LOGS', '').lower() in ('1', 'true', 'yes', 'on')
 # If enabled, do not pass --rm to docker run, so failed containers remain inspectable.
 DEBUG_KEEP_RUNNER_CONTAINER = os.environ.get('DEBUG_KEEP_RUNNER_CONTAINER', '').lower() in ('1', 'true', 'yes', 'on')
+DEBUG_DOTNET_DUMPS = os.environ.get('DEBUG_DOTNET_DUMPS', '').lower() in ('1', 'true', 'yes', 'on')
 
 # Debug spawn log sampling controls (only used when DEBUG_SPAWN_LOGS is enabled)
 DEBUG_SPAWN_LOG_TAIL_LINES = _env_int('DEBUG_SPAWN_LOG_TAIL_LINES', 400)
@@ -575,6 +575,7 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         '-e', f'RUNNER_LABELS={runner_labels}',
         '-e', f'JOB_ID={job_id}',
         '-e', f'RUNNER_USE_HOST_DOCKER={str(use_host_docker).lower()}',
+        *(['-e', 'DEBUG_DOTNET_DUMPS=true'] if DEBUG_DOTNET_DUMPS else []),
         # If set, the runner will use an external Docker daemon (DinD sidecar) via TCP.
         *(['-e', f'DOCKER_HOST={dind_docker_host}'] if dind_docker_host else []),
         # Important: DOCKER_TLS_VERIFY is enabled if set to any non-empty value.
@@ -593,6 +594,15 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         # More aggressive stabilization knobs (can be slower, but tends to avoid JIT edge cases).
         *(['-e', 'DOTNET_EnableHWIntrinsic=0'] if emulated_amd64_on_arm else []),
         *(['-e', 'DOTNET_JITMinOpts=1'] if emulated_amd64_on_arm else []),
+        # Reduce .NET diagnostic/telemetry plumbing and avoid W^X write-xor-execute issues under emulation.
+        *(['-e', 'DOTNET_EnableDiagnostics=0'] if emulated_amd64_on_arm else []),
+        *(['-e', 'COMPlus_EnableDiagnostics=0'] if emulated_amd64_on_arm else []),
+        *(['-e', 'DOTNET_EnableWriteXorExecute=0'] if emulated_amd64_on_arm else []),
+        *(['-e', 'COMPlus_EnableWriteXorExecute=0'] if emulated_amd64_on_arm else []),
+        # Optional: emit .NET minidumps on crash (requires DEBUG_DOTNET_DUMPS=true and keeping containers).
+        *(['-e', 'COMPlus_DbgEnableMiniDump=1'] if (emulated_amd64_on_arm and DEBUG_DOTNET_DUMPS) else []),
+        *(['-e', 'COMPlus_DbgMiniDumpType=1'] if (emulated_amd64_on_arm and DEBUG_DOTNET_DUMPS) else []),
+        *(['-e', 'COMPlus_DbgMiniDumpName=/tmp/dotnet-dumps/coreclr.%e.%p.%t.dmp'] if (emulated_amd64_on_arm and DEBUG_DOTNET_DUMPS) else []),
         # Allow the runner container to access host kernel modules for modprobe.
         # This can be required for Docker NAT (iptable_nat) in Docker-in-Docker.
         *(['-v', '/lib/modules:/lib/modules:ro'] if RUNNER_MOUNT_LIB_MODULES else []),
@@ -690,6 +700,21 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
                             logger.info("Runner config log (exec @~%ss):\n%s", int(delay), exec_config.stdout.rstrip())
                         if exec_config.stderr.strip():
                             logger.info("Runner config log stderr (exec @~%ss):\n%s", int(delay), exec_config.stderr.rstrip())
+
+                        exec_dumps = subprocess.run(
+                            [
+                                'docker', 'exec', runner_name, 'sh', '-lc',
+                                'if [ -d /tmp/dotnet-dumps ]; then '
+                                'echo "=== /tmp/dotnet-dumps ==="; ls -lah /tmp/dotnet-dumps || true; fi',
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=15,
+                        )
+                        if exec_dumps.stdout.strip():
+                            logger.info("Runner dotnet dumps (exec @~%ss):\n%s", int(delay), exec_dumps.stdout.rstrip())
+                        if exec_dumps.stderr.strip():
+                            logger.info("Runner dotnet dumps stderr (exec @~%ss):\n%s", int(delay), exec_dumps.stderr.rstrip())
                     except Exception as log_exc:
                         logger.debug(f"Failed to gather debug logs for {runner_name}: {log_exc}")
 
@@ -962,6 +987,7 @@ def main():
     logger.info(f"Docker network for runners: {DOCKER_NETWORK or '(default)'}")
     logger.info(f"DEBUG_SPAWN_LOGS: {DEBUG_SPAWN_LOGS}")
     logger.info(f"DEBUG_KEEP_RUNNER_CONTAINER: {DEBUG_KEEP_RUNNER_CONTAINER}")
+    logger.info(f"DEBUG_DOTNET_DUMPS: {DEBUG_DOTNET_DUMPS}")
     
     try:
         server.serve_forever()

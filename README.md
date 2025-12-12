@@ -173,6 +173,7 @@ That's it! The stack will:
 | `RUNNER_IMAGE` | No | `ghcr.io/depoll/gh-runner-docker:ephemeral` | Ephemeral runner image |
 | `DEBUG_SPAWN_LOGS` | No | - | Controller: log spawn details and tail runner logs |
 | `DEBUG_KEEP_RUNNER_CONTAINER` | No | - | Controller: keep failed runner containers (disables `--rm`) |
+| `DEBUG_DOTNET_DUMPS` | No | - | Runner: enable .NET crash minidumps under `/tmp/dotnet-dumps` (use with `DEBUG_KEEP_RUNNER_CONTAINER=true`) |
 
 > **ARM hosts + `runs-on: …, x64`**: The controller runs the runner container as `linux/amd64` under emulation (QEMU).
 

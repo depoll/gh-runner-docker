@@ -17,6 +17,24 @@ is_true() {
     esac
 }
 
+setup_dotnet_crash_dumps() {
+    if ! is_true "${DEBUG_DOTNET_DUMPS:-}"; then
+        return 0
+    fi
+
+    echo "Enabling .NET crash dumps (DEBUG_DOTNET_DUMPS=true)"
+    mkdir -p /tmp/dotnet-dumps >/dev/null 2>&1 || true
+
+    # Best-effort: allow writing core files if the kernel permits it.
+    ulimit -c unlimited >/dev/null 2>&1 || true
+
+    # Only set defaults if not already provided.
+    : "${COMPlus_DbgEnableMiniDump:=1}"
+    : "${COMPlus_DbgMiniDumpType:=1}"
+    : "${COMPlus_DbgMiniDumpName:=/tmp/dotnet-dumps/coreclr.%e.%p.%t.dmp}"
+    export COMPlus_DbgEnableMiniDump COMPlus_DbgMiniDumpType COMPlus_DbgMiniDumpName
+}
+
 configure_iptables_backend() {
     # Best-effort: load common netfilter modules needed for Docker NAT.
     # This only works if the container can access host modules (mount /lib/modules)
@@ -121,6 +139,8 @@ cleanup() {
 
 # Set trap for cleanup
 trap cleanup EXIT SIGTERM SIGINT
+
+setup_dotnet_crash_dumps
 
 # Start containerd first
 echo "Starting containerd..."
