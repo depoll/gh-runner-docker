@@ -45,6 +45,53 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+_network_gateway_cache_lock = threading.Lock()
+_network_gateway_cache: dict[str, str] = {}
+
+
+def _docker_network_gateway_ip(network_name: str) -> str | None:
+    """Best-effort lookup of the gateway IP for a Docker bridge network."""
+    name = (network_name or '').strip()
+    if not name:
+        return None
+
+    with _network_gateway_cache_lock:
+        cached = _network_gateway_cache.get(name)
+    if cached:
+        return cached
+
+    try:
+        inspect = subprocess.run(
+            ['docker', 'network', 'inspect', name],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if inspect.returncode != 0:
+            if inspect.stderr:
+                logger.debug("docker network inspect %s failed: %s", name, inspect.stderr.strip())
+            return None
+
+        payload = json.loads(inspect.stdout or '[]')
+        if not payload:
+            return None
+        ipam = (payload[0] or {}).get('IPAM') or {}
+        cfg = (ipam.get('Config') or [])
+        if not cfg:
+            return None
+        gateway = (cfg[0] or {}).get('Gateway')
+        if not gateway or not str(gateway).strip():
+            return None
+        gateway = str(gateway).strip()
+
+        with _network_gateway_cache_lock:
+            _network_gateway_cache[name] = gateway
+        return gateway
+    except Exception as e:
+        logger.debug("Failed to determine gateway for docker network %s: %s", name, e)
+        return None
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == '':
@@ -681,7 +728,14 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
     # containers need a stable way to reach the host. On Linux Docker, the special
     # host-gateway mapping makes host.docker.internal work.
     if RUNNER_HTTP_PROXY or RUNNER_HTTPS_PROXY or RUNNER_ALL_PROXY:
-        cmd += ['--add-host', 'host.docker.internal:host-gateway']
+        # NOTE: Docker's `host-gateway` often maps to docker0 (172.17.0.1), which is
+        # not reachable from containers attached to a user-defined bridge network.
+        # Prefer the actual gateway of the configured DOCKER_NETWORK.
+        gateway_ip = _docker_network_gateway_ip(DOCKER_NETWORK)
+        if gateway_ip:
+            cmd += ['--add-host', f'host.docker.internal:{gateway_ip}']
+        else:
+            cmd += ['--add-host', 'host.docker.internal:host-gateway']
 
     # Proxies can accidentally break internal connectivity.
     # In particular, the Docker CLI inside the runner may respect HTTP(S)_PROXY and try to

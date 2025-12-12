@@ -180,7 +180,7 @@ That's it! The stack will:
 | `RUNNER_NO_PROXY` | No | - | Controller: pass `NO_PROXY/no_proxy` into runner containers |
 | `RUNNER_AUTO_INSTALL_BINFMT_AMD64` | No | - | Controller: if amd64 emulation is missing on ARM, attempt to install binfmt/qemu-user via a privileged `tonistiigi/binfmt` container |
 
-> Tip: If your proxy runs on the Docker host (e.g., WARP proxy forwarded with `socat`), you can usually use `host.docker.internal` as the hostname from inside runner containers.
+> Tip: If your proxy runs on the Docker host, you can usually use `host.docker.internal` as the hostname from inside runner containers. The controller adds a host mapping for this name so it resolves to the gateway of `DOCKER_NETWORK` (works reliably on Linux user-defined bridge networks).
 
 > **ARM hosts + `runs-on: …, x64`**: The controller runs the runner container as `linux/amd64` under emulation (QEMU).
 
