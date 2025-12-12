@@ -92,6 +92,8 @@ PORT = int(os.environ.get('PORT', '8080'))
 DOCKER_NETWORK = os.environ.get('DOCKER_NETWORK', '')
 RUNNER_DOCKER_STORAGE_DRIVER = os.environ.get('RUNNER_DOCKER_STORAGE_DRIVER', '').strip()
 RUNNER_MOUNT_LIB_MODULES = os.environ.get('RUNNER_MOUNT_LIB_MODULES', 'true').lower() in ('1', 'true', 'yes', 'on')
+RUNNER_USE_HOST_DOCKER = os.environ.get('RUNNER_USE_HOST_DOCKER', '').lower() in ('1', 'true', 'yes', 'on')
+RUNNER_USE_HOST_DOCKER_DISABLE = os.environ.get('RUNNER_USE_HOST_DOCKER', '').lower() in ('0', 'false', 'no', 'off')
 
 # Debug / diagnostics
 # If enabled, prints additional spawn diagnostics and tails runner container logs briefly.
@@ -418,6 +420,13 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
             platform_args = ['--platform', 'linux/amd64']
             logger.info(f"Job {job_id} requested amd64/x64 on {host_machine} host, using emulation")
 
+    # Docker strategy:
+    # - DinD is fragile on some hosts (especially amd64 under emulation on ARM).
+    # - Prefer using the host Docker daemon via /var/run/docker.sock in that case.
+    use_host_docker = RUNNER_USE_HOST_DOCKER
+    if not RUNNER_USE_HOST_DOCKER_DISABLE and is_host_arm and platform_args == ['--platform', 'linux/amd64']:
+        use_host_docker = True
+
     # Storage driver selection for Docker-in-Docker inside the runner container.
     # When running an amd64 runner under emulation on ARM hosts, overlay2 and fuse-overlayfs
     # are frequently unreliable; vfs is slower but typically the most consistent.
@@ -477,9 +486,12 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         '-e', f'RUNNER_NAME={runner_name}',
         '-e', f'RUNNER_LABELS={runner_labels}',
         '-e', f'JOB_ID={job_id}',
+        '-e', f'RUNNER_USE_HOST_DOCKER={str(use_host_docker).lower()}',
         # Allow the runner container to access host kernel modules for modprobe.
         # This can be required for Docker NAT (iptable_nat) in Docker-in-Docker.
         *(['-v', '/lib/modules:/lib/modules:ro'] if RUNNER_MOUNT_LIB_MODULES else []),
+        # Optional: use host docker daemon rather than Docker-in-Docker.
+        *(['-v', '/var/run/docker.sock:/var/run/docker.sock'] if use_host_docker else []),
         '--privileged',  # Required for Docker-in-Docker
         RUNNER_IMAGE
     ]

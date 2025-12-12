@@ -3,6 +3,13 @@
 set -e
 set -o pipefail
 
+is_true() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 configure_iptables_backend() {
     # Best-effort: load common netfilter modules needed for Docker NAT.
     # This only works if the container can access host modules (mount /lib/modules)
@@ -279,8 +286,26 @@ trap cleanup SIGTERM SIGINT
 
 # Start containerd first
 echo "Starting containerd..."
-containerd --log-level warn &
-sleep 5
+if is_true "${RUNNER_USE_HOST_DOCKER:-}" && [ -S /var/run/docker.sock ]; then
+    echo "Using host Docker via /var/run/docker.sock (skipping Docker-in-Docker)"
+    export DOCKER_HOST="unix:///var/run/docker.sock"
+
+    echo "Waiting for host Docker daemon to be reachable..."
+    deadline=$((SECONDS + 30))
+    while [ $SECONDS -lt $deadline ]; do
+        if timeout 3 docker info >/dev/null 2>&1; then
+            echo "Host Docker daemon is reachable"
+            break
+        fi
+        sleep 2
+    done
+    if ! timeout 3 docker info >/dev/null 2>&1; then
+        echo "ERROR: Host Docker daemon is not reachable from runner container" >&2
+        exit 1
+    fi
+else
+    containerd --log-level warn &
+    sleep 5
 
 # Start Docker daemon for Docker-in-Docker
 echo "Starting Docker daemon..."
@@ -386,13 +411,14 @@ for i in {1..30}; do
     sleep 2
 done
 
-if ! timeout 3 docker info >/dev/null 2>&1; then
-    echo "ERROR: Docker daemon failed to start" >&2
-    if [ -n "$last_dockerd_log" ]; then
-        echo "Last 200 lines of $last_dockerd_log:" >&2
-        tail -n 200 "$last_dockerd_log" >&2 || true
+    if ! timeout 3 docker info >/dev/null 2>&1; then
+        echo "ERROR: Docker daemon failed to start" >&2
+        if [ -n "$last_dockerd_log" ]; then
+            echo "Last 200 lines of $last_dockerd_log:" >&2
+            tail -n 200 "$last_dockerd_log" >&2 || true
+        fi
+        exit 1
     fi
-    exit 1
 fi
 
 # Start background cleanup job if DEPLOYMENT_ID is provided
