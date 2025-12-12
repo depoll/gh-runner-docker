@@ -174,6 +174,8 @@ That's it! The stack will:
 | `DEBUG_SPAWN_LOGS` | No | - | Controller: log spawn details and tail runner logs |
 | `DEBUG_KEEP_RUNNER_CONTAINER` | No | - | Controller: keep failed runner containers (disables `--rm`) |
 
+> **ARM hosts + `runs-on: …, x64`**: The controller runs the runner container as `linux/amd64` under emulation (QEMU).
+
 ### GitHub Token Scopes
 
 | Mode | Required Scopes |

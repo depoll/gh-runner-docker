@@ -101,6 +101,10 @@ RUNNER_USE_HOST_DOCKER = _runner_use_host_docker_raw in ('1', 'true', 'yes', 'on
 RUNNER_DIND_SIDECAR = os.environ.get('RUNNER_DIND_SIDECAR', 'auto').strip().lower()
 RUNNER_DIND_IMAGE = os.environ.get('RUNNER_DIND_IMAGE', 'docker:27-dind').strip() or 'docker:27-dind'
 
+# On ARM hosts, jobs frequently request x64/amd64. This stack emulates linux/amd64 via QEMU.
+# Note: The GitHub runner is a .NET app and can be unstable under emulation in some environments.
+# We apply extra .NET safety env vars for emulated runner containers.
+
 # Debug / diagnostics
 # If enabled, prints additional spawn diagnostics and tails runner container logs briefly.
 DEBUG_SPAWN_LOGS = os.environ.get('DEBUG_SPAWN_LOGS', '').lower() in ('1', 'true', 'yes', 'on')
@@ -399,8 +403,8 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
     # Generate unique runner name (moved outside the lock since we have the token)
     runner_name = f"ephemeral-{job_id}-{int(time.time())}"
 
-    # Determine architecture and platform
-    platform_args = []
+    # Determine requested architecture label and container platform
+    platform_args: list[str] = []
     
     # Detect host architecture
     host_machine = platform.machine().lower()
@@ -424,7 +428,11 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         arch_label = 'x64'
         if is_host_arm:
             platform_args = ['--platform', 'linux/amd64']
-            logger.info(f"Job {job_id} requested amd64/x64 on {host_machine} host, using emulation")
+            logger.info(
+                "Job %s requested amd64/x64 on %s host; using linux/amd64 emulation",
+                job_id,
+                host_machine,
+            )
 
     # Docker strategy:
     # Default: Docker-in-Docker inside the runner container.
@@ -574,7 +582,14 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         *(['-e', 'DOCKER_TLS_VERIFY='] if dind_docker_host else []),
         *(['-e', 'DOCKER_TLS_CERTDIR='] if dind_docker_host else []),
         # Helpful default for amd64-labeled jobs; makes docker pull/run default to amd64 when possible.
-        *(['-e', 'DOCKER_DEFAULT_PLATFORM=linux/amd64'] if emulated_amd64_on_arm else []),
+        *(['-e', 'DOCKER_DEFAULT_PLATFORM=linux/amd64'] if arch_label == 'x64' else []),
+        # When the runner itself is linux/amd64 under emulation on ARM, apply .NET runtime
+        # mitigations to reduce QEMU/JIT/ISA instability during runner registration.
+        *(['-e', 'DOTNET_ReadyToRun=0'] if emulated_amd64_on_arm else []),
+        *(['-e', 'DOTNET_TieredCompilation=0'] if emulated_amd64_on_arm else []),
+        *(['-e', 'DOTNET_TieredPGO=0'] if emulated_amd64_on_arm else []),
+        *(['-e', 'DOTNET_EnableAVX=0'] if emulated_amd64_on_arm else []),
+        *(['-e', 'DOTNET_EnableAVX2=0'] if emulated_amd64_on_arm else []),
         # Allow the runner container to access host kernel modules for modprobe.
         # This can be required for Docker NAT (iptable_nat) in Docker-in-Docker.
         *(['-v', '/lib/modules:/lib/modules:ro'] if RUNNER_MOUNT_LIB_MODULES else []),
