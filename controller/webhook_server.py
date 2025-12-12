@@ -56,6 +56,10 @@ REQUIRED_LABELS = os.environ.get('REQUIRED_LABELS', '')
 # Jobs whose labels include any of these will be ignored.
 # Default skips macOS and Windows jobs, since this stack provides Linux runners.
 UNSUPPORTED_JOB_LABELS = os.environ.get('UNSUPPORTED_JOB_LABELS', 'macos,windows')
+# If enabled, the controller will `docker pull` the runner image before spawning.
+# This is useful because the runner image is not a docker-compose service, so
+# `docker compose pull` won't update it.
+PULL_RUNNER_IMAGE = os.environ.get('PULL_RUNNER_IMAGE', 'true').lower() in ('1', 'true', 'yes', 'on')
 MAX_RUNNERS = int(os.environ.get('MAX_RUNNERS', '10'))
 PORT = int(os.environ.get('PORT', '8080'))
 DOCKER_NETWORK = os.environ.get('DOCKER_NETWORK', '')
@@ -397,6 +401,26 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
             ' '.join(platform_args) if platform_args else '(none)',
             runner_labels,
         )
+
+    if PULL_RUNNER_IMAGE:
+        try:
+            pull = subprocess.run(
+                ['docker', 'pull', RUNNER_IMAGE],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if pull.returncode == 0:
+                if DEBUG_SPAWN_LOGS:
+                    logger.info("Pulled runner image: %s", RUNNER_IMAGE)
+            else:
+                logger.warning(
+                    "Failed to pull runner image %s (continuing with local cache): %s",
+                    RUNNER_IMAGE,
+                    (pull.stderr or pull.stdout or '').strip(),
+                )
+        except Exception as e:
+            logger.warning("Failed to pull runner image %s (continuing): %s", RUNNER_IMAGE, e)
     
     # Build docker command
     cmd = ['docker', 'run', '-d', '--name', runner_name]
@@ -717,6 +741,7 @@ def main():
     logger.info(f"Webhook controller starting on port {PORT}")
     logger.info(f"GitHub URL: {GITHUB_URL}")
     logger.info(f"Runner image: {RUNNER_IMAGE}")
+    logger.info(f"Pull runner image before spawn: {PULL_RUNNER_IMAGE}")
     logger.info(f"Max runners: {MAX_RUNNERS}")
     logger.info(f"Docker network for runners: {DOCKER_NETWORK or '(default)'}")
     logger.info(f"DEBUG_SPAWN_LOGS: {DEBUG_SPAWN_LOGS}")
