@@ -569,7 +569,10 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         '-e', f'RUNNER_USE_HOST_DOCKER={str(use_host_docker).lower()}',
         # If set, the runner will use an external Docker daemon (DinD sidecar) via TCP.
         *(['-e', f'DOCKER_HOST={dind_docker_host}'] if dind_docker_host else []),
-        *(['-e', 'DOCKER_TLS_VERIFY=0'] if dind_docker_host else []),
+        # Important: DOCKER_TLS_VERIFY is enabled if set to any non-empty value.
+        # Set it to empty to ensure plain TCP works with DOCKER_TLS_CERTDIR disabled on the sidecar.
+        *(['-e', 'DOCKER_TLS_VERIFY='] if dind_docker_host else []),
+        *(['-e', 'DOCKER_TLS_CERTDIR='] if dind_docker_host else []),
         # Helpful default for amd64-labeled jobs; makes docker pull/run default to amd64 when possible.
         *(['-e', 'DOCKER_DEFAULT_PLATFORM=linux/amd64'] if emulated_amd64_on_arm else []),
         # Allow the runner container to access host kernel modules for modprobe.
