@@ -45,20 +45,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-_network_gateway_cache_lock = threading.Lock()
-_network_gateway_cache: dict[str, str] = {}
-
-
 def _docker_network_gateway_ip(network_name: str) -> str | None:
-    """Best-effort lookup of the gateway IP for a Docker bridge network."""
+    """Best-effort lookup of the gateway IP for a Docker bridge network.
+
+    Note: do not cache this long-term. Docker networks can be recreated with the same
+    name but a different subnet/gateway, and stale gateway values can lead to hard-to-
+    diagnose "No route to host" failures from containers.
+    """
     name = (network_name or '').strip()
     if not name:
         return None
-
-    with _network_gateway_cache_lock:
-        cached = _network_gateway_cache.get(name)
-    if cached:
-        return cached
 
     try:
         inspect = subprocess.run(
@@ -82,11 +78,7 @@ def _docker_network_gateway_ip(network_name: str) -> str | None:
         gateway = (cfg[0] or {}).get('Gateway')
         if not gateway or not str(gateway).strip():
             return None
-        gateway = str(gateway).strip()
-
-        with _network_gateway_cache_lock:
-            _network_gateway_cache[name] = gateway
-        return gateway
+        return str(gateway).strip()
     except Exception as e:
         logger.debug("Failed to determine gateway for docker network %s: %s", name, e)
         return None
@@ -733,6 +725,7 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         # Prefer the actual gateway of the configured DOCKER_NETWORK.
         gateway_ip = _docker_network_gateway_ip(DOCKER_NETWORK)
         if gateway_ip:
+            logger.info("Mapping host.docker.internal to %s (gateway for DOCKER_NETWORK=%s)", gateway_ip, DOCKER_NETWORK)
             cmd += ['--add-host', f'host.docker.internal:{gateway_ip}']
         else:
             cmd += ['--add-host', 'host.docker.internal:host-gateway']
