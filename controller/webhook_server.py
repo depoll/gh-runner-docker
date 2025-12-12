@@ -590,6 +590,9 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         *(['-e', 'DOTNET_TieredPGO=0'] if emulated_amd64_on_arm else []),
         *(['-e', 'DOTNET_EnableAVX=0'] if emulated_amd64_on_arm else []),
         *(['-e', 'DOTNET_EnableAVX2=0'] if emulated_amd64_on_arm else []),
+        # More aggressive stabilization knobs (can be slower, but tends to avoid JIT edge cases).
+        *(['-e', 'DOTNET_EnableHWIntrinsic=0'] if emulated_amd64_on_arm else []),
+        *(['-e', 'DOTNET_JITMinOpts=1'] if emulated_amd64_on_arm else []),
         # Allow the runner container to access host kernel modules for modprobe.
         # This can be required for Docker NAT (iptable_nat) in Docker-in-Docker.
         *(['-v', '/lib/modules:/lib/modules:ro'] if RUNNER_MOUNT_LIB_MODULES else []),
