@@ -95,6 +95,12 @@ RUNNER_MOUNT_LIB_MODULES = os.environ.get('RUNNER_MOUNT_LIB_MODULES', 'true').lo
 _runner_use_host_docker_raw = os.environ.get('RUNNER_USE_HOST_DOCKER', '').strip().lower()
 RUNNER_USE_HOST_DOCKER = _runner_use_host_docker_raw in ('1', 'true', 'yes', 'on')
 
+# Optional: start a separate Docker daemon container (native arch) and point the runner at it.
+# This is useful when the runner itself is running under emulation (e.g., amd64 on ARM) and
+# dockerd fails due to iptables/nftables syscalls not working under qemu.
+RUNNER_DIND_SIDECAR = os.environ.get('RUNNER_DIND_SIDECAR', 'auto').strip().lower()
+RUNNER_DIND_IMAGE = os.environ.get('RUNNER_DIND_IMAGE', 'docker:27-dind').strip() or 'docker:27-dind'
+
 # Debug / diagnostics
 # If enabled, prints additional spawn diagnostics and tails runner container logs briefly.
 DEBUG_SPAWN_LOGS = os.environ.get('DEBUG_SPAWN_LOGS', '').lower() in ('1', 'true', 'yes', 'on')
@@ -421,18 +427,92 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
             logger.info(f"Job {job_id} requested amd64/x64 on {host_machine} host, using emulation")
 
     # Docker strategy:
-    # - DinD is fragile on some hosts (especially amd64 under emulation on ARM).
-    # - Prefer using the host Docker daemon via /var/run/docker.sock in that case.
-    # Default: Docker-in-Docker. Using host docker.sock is an explicit opt-in
-    # because it changes the security model of the runner.
+    # Default: Docker-in-Docker inside the runner container.
+    # Optional: host docker.sock (explicit opt-in; changes security model).
     use_host_docker = RUNNER_USE_HOST_DOCKER
+
+    # Optional: separate DinD sidecar (keeps a DinD boundary but avoids running dockerd under emulation).
+    emulated_amd64_on_arm = is_host_arm and platform_args == ['--platform', 'linux/amd64']
+    use_dind_sidecar = False
+    if not use_host_docker:
+        if RUNNER_DIND_SIDECAR in ('1', 'true', 'yes', 'on'):
+            use_dind_sidecar = True
+        elif RUNNER_DIND_SIDECAR in ('0', 'false', 'no', 'off'):
+            use_dind_sidecar = False
+        else:
+            # auto
+            use_dind_sidecar = emulated_amd64_on_arm
+
+    # Sidecar uses container-name DNS; requires a user-defined bridge network.
+    if use_dind_sidecar and not DOCKER_NETWORK:
+        logger.warning("RUNNER_DIND_SIDECAR enabled but DOCKER_NETWORK is empty; disabling sidecar")
+        use_dind_sidecar = False
 
     # Storage driver selection for Docker-in-Docker inside the runner container.
     # When running an amd64 runner under emulation on ARM hosts, overlay2 and fuse-overlayfs
     # are frequently unreliable; vfs is slower but typically the most consistent.
     docker_storage_driver = RUNNER_DOCKER_STORAGE_DRIVER
-    if not docker_storage_driver and is_host_arm and platform_args == ['--platform', 'linux/amd64']:
+    if not docker_storage_driver and emulated_amd64_on_arm:
         docker_storage_driver = 'vfs'
+
+    dind_sidecar_name: str | None = None
+    dind_sidecar_id: str | None = None
+    dind_docker_host: str | None = None
+    if use_dind_sidecar:
+        dind_sidecar_name = f"dind-{runner_name}"
+        dind_docker_host = f"tcp://{dind_sidecar_name}:2375"
+
+        # Start a native-arch dind sidecar (no --platform argument so it matches the host).
+        # We disable TLS for simplicity on an internal Docker network.
+        sidecar_cmd = [
+            'docker', 'run', '-d', '--name', dind_sidecar_name,
+            '--network', DOCKER_NETWORK,
+            '--privileged',
+            '-e', 'DOCKER_TLS_CERTDIR=',
+            RUNNER_DIND_IMAGE,
+            'dockerd', '--host=tcp://0.0.0.0:2375', '--host=unix:///var/run/docker.sock',
+        ]
+
+        try:
+            sidecar = subprocess.run(sidecar_cmd, capture_output=True, text=True, timeout=60)
+            if sidecar.returncode != 0:
+                logger.error("Failed to start DinD sidecar: %s", (sidecar.stderr or sidecar.stdout or '').strip())
+                return False
+            dind_sidecar_id = sidecar.stdout.strip()
+
+            # Wait until dockerd is responsive inside the sidecar.
+            deadline = time.time() + 60
+            ready = False
+            while time.time() < deadline:
+                probe = subprocess.run(
+                    ['docker', 'exec', dind_sidecar_name, 'docker', 'info'],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if probe.returncode == 0:
+                    ready = True
+                    break
+                time.sleep(2)
+
+            if not ready:
+                logs = subprocess.run(
+                    ['docker', 'logs', '--tail', '200', dind_sidecar_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                logger.error(
+                    "DinD sidecar did not become ready; logs:\n%s",
+                    (logs.stdout or logs.stderr or '').rstrip(),
+                )
+                subprocess.run(['docker', 'rm', '-f', dind_sidecar_name], capture_output=True, timeout=30)
+                return False
+        except Exception as e:
+            logger.error("Error starting DinD sidecar: %s", e)
+            if dind_sidecar_name:
+                subprocess.run(['docker', 'rm', '-f', dind_sidecar_name], capture_output=True, timeout=30)
+            return False
     
     # Adjust RUNNER_LABELS to match architecture
     # Remove any existing arch labels from the configured defaults
@@ -487,6 +567,11 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         '-e', f'RUNNER_LABELS={runner_labels}',
         '-e', f'JOB_ID={job_id}',
         '-e', f'RUNNER_USE_HOST_DOCKER={str(use_host_docker).lower()}',
+        # If set, the runner will use an external Docker daemon (DinD sidecar) via TCP.
+        *(['-e', f'DOCKER_HOST={dind_docker_host}'] if dind_docker_host else []),
+        *(['-e', 'DOCKER_TLS_VERIFY=0'] if dind_docker_host else []),
+        # Helpful default for amd64-labeled jobs; makes docker pull/run default to amd64 when possible.
+        *(['-e', 'DOCKER_DEFAULT_PLATFORM=linux/amd64'] if emulated_amd64_on_arm else []),
         # Allow the runner container to access host kernel modules for modprobe.
         # This can be required for Docker NAT (iptable_nat) in Docker-in-Docker.
         *(['-v', '/lib/modules:/lib/modules:ro'] if RUNNER_MOUNT_LIB_MODULES else []),
@@ -518,7 +603,8 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
                     'container_id': container_id,
                     'runner_name': runner_name,
                     'job_name': job_name,
-                    'started_at': time.time()
+                    'started_at': time.time(),
+                    'dind_sidecar_name': dind_sidecar_name,
                 }
             logger.info(f"Spawned runner {runner_name} for job {job_id} ({job_name})")
 
@@ -589,12 +675,18 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
             return True
         else:
             logger.error(f"Failed to spawn runner: {result.stderr}")
+            if dind_sidecar_name:
+                subprocess.run(['docker', 'rm', '-f', dind_sidecar_name], capture_output=True, timeout=30)
             return False
     except subprocess.TimeoutExpired:
         logger.error("Timeout spawning runner container")
+        if dind_sidecar_name:
+            subprocess.run(['docker', 'rm', '-f', dind_sidecar_name], capture_output=True, timeout=30)
         return False
     except Exception as e:
         logger.error(f"Error spawning runner: {e}")
+        if dind_sidecar_name:
+            subprocess.run(['docker', 'rm', '-f', dind_sidecar_name], capture_output=True, timeout=30)
         return False
 
 
@@ -608,6 +700,7 @@ def cleanup_runner(job_id: int) -> None:
         return
     
     runner_name = runner_info['runner_name']
+    dind_sidecar_name = runner_info.get('dind_sidecar_name')
     
     # The container should auto-remove, but force cleanup just in case
     try:
@@ -619,6 +712,13 @@ def cleanup_runner(job_id: int) -> None:
         logger.info(f"Stopped runner {runner_name} for job {job_id}")
     except Exception as e:
         logger.debug(f"Runner cleanup (may already be stopped): {e}")
+
+    if dind_sidecar_name:
+        try:
+            subprocess.run(['docker', 'rm', '-f', dind_sidecar_name], capture_output=True, timeout=30)
+            logger.info("Removed DinD sidecar %s for job %s", dind_sidecar_name, job_id)
+        except Exception as e:
+            logger.debug("Failed to remove DinD sidecar %s: %s", dind_sidecar_name, e)
 
 
 def labels_match(job_labels: list[str]) -> bool:

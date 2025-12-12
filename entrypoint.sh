@@ -302,15 +302,31 @@ trap cleanup SIGTERM SIGINT
 
 # Start containerd first
 echo "Starting containerd..."
-if is_true "${RUNNER_USE_HOST_DOCKER:-}" && [ -S /var/run/docker.sock ]; then
+if [ -n "${DOCKER_HOST:-}" ]; then
+    echo "Using external Docker daemon via DOCKER_HOST=${DOCKER_HOST} (skipping Docker-in-Docker)"
+
+    echo "Waiting for Docker daemon to be reachable..."
+    deadline=$((SECONDS + 60))
+    while [ $SECONDS -lt $deadline ]; do
+        if timeout 3 docker info >/dev/null 2>&1; then
+            echo "Docker daemon is reachable"
+            break
+        fi
+        sleep 2
+    done
+    if ! timeout 3 docker info >/dev/null 2>&1; then
+        echo "ERROR: External Docker daemon is not reachable from runner container" >&2
+        exit 1
+    fi
+elif is_true "${RUNNER_USE_HOST_DOCKER:-}" && [ -S /var/run/docker.sock ]; then
     echo "Using host Docker via /var/run/docker.sock (skipping Docker-in-Docker)"
     export DOCKER_HOST="unix:///var/run/docker.sock"
 
-    echo "Waiting for host Docker daemon to be reachable..."
+    echo "Waiting for Docker daemon to be reachable..."
     deadline=$((SECONDS + 30))
     while [ $SECONDS -lt $deadline ]; do
         if timeout 3 docker info >/dev/null 2>&1; then
-            echo "Host Docker daemon is reachable"
+            echo "Docker daemon is reachable"
             break
         fi
         sleep 2

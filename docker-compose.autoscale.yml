@@ -84,6 +84,12 @@ services:
       RUNNER_DOCKER_STORAGE_DRIVER: ${RUNNER_DOCKER_STORAGE_DRIVER:-}
       # Optional: Mount host /lib/modules into runner containers (helps modprobe iptable_nat)
       RUNNER_MOUNT_LIB_MODULES: ${RUNNER_MOUNT_LIB_MODULES:-true}
+      # Optional: Use a native-arch Docker daemon sidecar for emulated runners.
+      # - auto: enable for amd64-on-arm emulation
+      # - true: always use sidecar (requires DOCKER_NETWORK)
+      # - false: disable sidecar
+      RUNNER_DIND_SIDECAR: ${RUNNER_DIND_SIDECAR:-auto}
+      RUNNER_DIND_IMAGE: ${RUNNER_DIND_IMAGE:-docker:27-dind}
       # Optional: Debugging
       DEBUG_SPAWN_LOGS: ${DEBUG_SPAWN_LOGS:-}
       DEBUG_KEEP_RUNNER_CONTAINER: ${DEBUG_KEEP_RUNNER_CONTAINER:-}
