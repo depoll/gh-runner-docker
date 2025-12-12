@@ -107,6 +107,14 @@ RUNNER_HTTPS_PROXY = os.environ.get('RUNNER_HTTPS_PROXY', '').strip()
 RUNNER_NO_PROXY = os.environ.get('RUNNER_NO_PROXY', '').strip()
 RUNNER_ALL_PROXY = os.environ.get('RUNNER_ALL_PROXY', '').strip()
 
+# Optional: automatically install binfmt/qemu-user registration for amd64 when missing.
+# This lets ARM hosts run linux/amd64 containers (required for x64 GitHub Actions jobs).
+# SECURITY NOTE: This uses the host Docker socket to run a privileged container that mutates
+# host state (binfmt_misc). Keep it disabled unless you explicitly want this behavior.
+RUNNER_AUTO_INSTALL_BINFMT_AMD64 = os.environ.get('RUNNER_AUTO_INSTALL_BINFMT_AMD64', '').strip().lower() in (
+    '1', 'true', 'yes', 'on'
+)
+
 # On ARM hosts, jobs frequently request x64/amd64. This stack emulates linux/amd64 via QEMU.
 # Note: The GitHub runner is a .NET app and can be unstable under emulation in some environments.
 # We apply extra .NET safety env vars for emulated runner containers.
@@ -146,8 +154,8 @@ def _ensure_amd64_emulation_ready() -> bool:
         if _binfmt_amd64_ok is not None:
             return _binfmt_amd64_ok
 
-        try:
-            probe = subprocess.run(
+        def _probe() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
                 [
                     'docker', 'run', '--rm',
                     '--platform', 'linux/amd64',
@@ -158,6 +166,9 @@ def _ensure_amd64_emulation_ready() -> bool:
                 text=True,
                 timeout=45,
             )
+
+        try:
+            probe = _probe()
 
             if probe.returncode == 0:
                 _binfmt_amd64_ok = True
@@ -173,6 +184,39 @@ def _ensure_amd64_emulation_ready() -> bool:
             )
         except Exception as e:
             logger.error("linux/amd64 emulation probe errored: %s", e)
+
+        if RUNNER_AUTO_INSTALL_BINFMT_AMD64:
+            logger.warning(
+                "Attempting to auto-install amd64 binfmt registrations via a privileged container (RUNNER_AUTO_INSTALL_BINFMT_AMD64=true)."
+            )
+            try:
+                install = subprocess.run(
+                    ['docker', 'run', '--privileged', '--rm', 'tonistiigi/binfmt:latest', '--install', 'amd64'],
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                )
+                if install.returncode != 0:
+                    logger.error(
+                        "binfmt auto-install failed (returncode=%s). stdout=%r stderr=%r",
+                        install.returncode,
+                        (install.stdout or '').strip(),
+                        (install.stderr or '').strip(),
+                    )
+                else:
+                    logger.info("binfmt auto-install completed; re-probing linux/amd64 execution")
+                    reprobe = _probe()
+                    if reprobe.returncode == 0:
+                        _binfmt_amd64_ok = True
+                        return True
+                    logger.error(
+                        "linux/amd64 emulation still failing after auto-install (returncode=%s). stdout=%r stderr=%r",
+                        reprobe.returncode,
+                        (reprobe.stdout or '').strip(),
+                        (reprobe.stderr or '').strip(),
+                    )
+            except Exception as e:
+                logger.error("binfmt auto-install errored: %s", e)
 
         logger.error(
             "Cannot run linux/amd64 containers on this host. If you're on ARM and expecting x64 jobs, "

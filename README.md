@@ -178,10 +178,28 @@ That's it! The stack will:
 | `RUNNER_HTTP_PROXY` | No | - | Controller: pass `HTTP_PROXY/http_proxy` into runner containers |
 | `RUNNER_ALL_PROXY` | No | - | Controller: pass `ALL_PROXY/all_proxy` into runner containers |
 | `RUNNER_NO_PROXY` | No | - | Controller: pass `NO_PROXY/no_proxy` into runner containers |
+| `RUNNER_AUTO_INSTALL_BINFMT_AMD64` | No | - | Controller: if amd64 emulation is missing on ARM, attempt to install binfmt/qemu-user via a privileged `tonistiigi/binfmt` container |
 
 > Tip: If your proxy runs on the Docker host (e.g., WARP proxy forwarded with `socat`), you can usually use `host.docker.internal` as the hostname from inside runner containers.
 
 > **ARM hosts + `runs-on: …, x64`**: The controller runs the runner container as `linux/amd64` under emulation (QEMU).
+
+#### ARM hosts: why x64 emulation “stops working”
+
+On Linux ARM hosts, running `linux/amd64` containers requires `binfmt_misc` registrations (qemu-user). Those registrations often **do not persist across reboots** because they live under `/proc/sys/fs/binfmt_misc`.
+
+When they're missing, runner containers will fail immediately with errors like:
+
+- `exec /entrypoint.sh: exec format error`
+
+Fix (one-time, on the host):
+
+```bash
+docker run --privileged --rm tonistiigi/binfmt --install amd64
+docker run --rm --platform linux/amd64 busybox:1.36.1 echo ok
+```
+
+Optional self-heal (Controller): if you set `RUNNER_AUTO_INSTALL_BINFMT_AMD64=true`, the controller will attempt to auto-install amd64 binfmt registrations when it detects they're missing. This uses the host Docker socket to run a **privileged** container that mutates host state.
 
 ### GitHub Token Scopes
 

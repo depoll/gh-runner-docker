@@ -62,6 +62,10 @@ services:
       RUNNER_MOUNT_LIB_MODULES: ${RUNNER_MOUNT_LIB_MODULES:-true}
       RUNNER_DIND_SIDECAR: ${RUNNER_DIND_SIDECAR:-auto}
       RUNNER_DIND_IMAGE: ${RUNNER_DIND_IMAGE:-docker:27-dind}
+      # Optional (ARM hosts): If linux/amd64 emulation is missing after a reboot,
+      # the controller can attempt to install binfmt/qemu-user automatically.
+      # Note: this runs a privileged tonistiigi/binfmt container via the host Docker socket.
+      RUNNER_AUTO_INSTALL_BINFMT_AMD64: ${RUNNER_AUTO_INSTALL_BINFMT_AMD64:-}
       DEBUG_SPAWN_LOGS: ${DEBUG_SPAWN_LOGS:-}
       DEBUG_KEEP_RUNNER_CONTAINER: ${DEBUG_KEEP_RUNNER_CONTAINER:-}
     volumes:
