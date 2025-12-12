@@ -575,6 +575,12 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
     if DOCKER_NETWORK:
         cmd += ['--network', DOCKER_NETWORK]
 
+    # If you run an egress proxy on the host (e.g., WARP proxy + socat forwarder),
+    # containers need a stable way to reach the host. On Linux Docker, the special
+    # host-gateway mapping makes host.docker.internal work.
+    if RUNNER_HTTP_PROXY or RUNNER_HTTPS_PROXY or RUNNER_ALL_PROXY:
+        cmd += ['--add-host', 'host.docker.internal:host-gateway']
+
     # Build proxy env list (both upper/lower for compatibility).
     proxy_env: list[str] = []
     if RUNNER_HTTP_PROXY:

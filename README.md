@@ -179,6 +179,8 @@ That's it! The stack will:
 | `RUNNER_ALL_PROXY` | No | - | Controller: pass `ALL_PROXY/all_proxy` into runner containers |
 | `RUNNER_NO_PROXY` | No | - | Controller: pass `NO_PROXY/no_proxy` into runner containers |
 
+> Tip: If your proxy runs on the Docker host (e.g., WARP proxy forwarded with `socat`), you can usually use `host.docker.internal` as the hostname from inside runner containers.
+
 > **ARM hosts + `runs-on: …, x64`**: The controller runs the runner container as `linux/amd64` under emulation (QEMU).
 
 ### GitHub Token Scopes
