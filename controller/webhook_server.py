@@ -16,8 +16,11 @@ Environment Variables:
   WEBHOOK_SECRET     - (Optional) Manual webhook secret; auto-generated if not provided
   WEBHOOK_HOST       - (Required for auto-registration) Public URL where this server is reachable
   RUNNER_IMAGE       - Docker image for ephemeral runners (default: ghcr.io/depoll/gh-runner-docker:ephemeral)
-  RUNNER_LABELS      - Comma-separated labels for runners (default: self-hosted,linux,x64,ephemeral)
+  RUNNER_LABELS      - Comma-separated labels for runners (default: self-hosted,linux)
   REQUIRED_LABELS    - Only spawn runners for jobs requesting these labels (optional)
+  WARM_RUNNERS       - Keep a warm pool per arch, e.g. "x64=2,arm64=1" (default: disabled)
+  WARM_RUNNERS_X64   - Override warm x64 count (optional)
+  WARM_RUNNERS_ARM64 - Override warm arm64 count (optional)
   MAX_RUNNERS        - Maximum concurrent runners (default: 10)
   PORT               - Server port (default: 8080)
 """
@@ -56,6 +59,17 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_optional_int(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == '':
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError:
+        logger.warning("Invalid %s=%r; ignoring", name, raw)
+        return None
+
+
 def _env_csv_ints(name: str, default: list[int]) -> list[int]:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == '':
@@ -70,6 +84,57 @@ def _env_csv_ints(name: str, default: list[int]) -> list[int]:
         except ValueError:
             logger.warning("Ignoring invalid %s entry: %r", name, part)
     return values or default
+
+
+def _normalize_arch_label(raw: str) -> str | None:
+    value = (raw or '').strip().lower()
+    if value in ('x64', 'amd64', 'x86_64'):
+        return 'x64'
+    if value in ('arm64', 'aarch64'):
+        return 'arm64'
+    return None
+
+
+def _parse_warm_runner_counts() -> dict[str, int]:
+    raw = (os.environ.get('WARM_RUNNERS', '') or '').strip()
+    parsed: dict[str, int] = {}
+
+    if raw:
+        for part in raw.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            if '=' in part:
+                key, value = part.split('=', 1)
+            elif ':' in part:
+                key, value = part.split(':', 1)
+            else:
+                logger.warning("Ignoring invalid WARM_RUNNERS entry (expected key=value): %r", part)
+                continue
+
+            arch = _normalize_arch_label(key)
+            if not arch:
+                logger.warning("Ignoring unknown arch in WARM_RUNNERS: %r", key.strip())
+                continue
+
+            try:
+                count = int(value.strip())
+            except ValueError:
+                logger.warning("Ignoring invalid warm count in WARM_RUNNERS: %r", part)
+                continue
+            if count < 0:
+                logger.warning("Ignoring negative warm count in WARM_RUNNERS: %r", part)
+                continue
+            parsed[arch] = count
+
+    x64_override = _env_optional_int('WARM_RUNNERS_X64')
+    arm64_override = _env_optional_int('WARM_RUNNERS_ARM64')
+    if x64_override is not None and x64_override >= 0:
+        parsed['x64'] = x64_override
+    if arm64_override is not None and arm64_override >= 0:
+        parsed['arm64'] = arm64_override
+
+    return {arch: count for arch, count in parsed.items() if count > 0}
 
 # Configuration
 GITHUB_URL = os.environ.get('GITHUB_URL', '')
@@ -129,6 +194,14 @@ DEBUG_DOTNET_DUMPS = os.environ.get('DEBUG_DOTNET_DUMPS', '').lower() in ('1', '
 # Debug spawn log sampling controls (only used when DEBUG_SPAWN_LOGS is enabled)
 DEBUG_SPAWN_LOG_TAIL_LINES = _env_int('DEBUG_SPAWN_LOG_TAIL_LINES', 400)
 DEBUG_SPAWN_LOG_SAMPLE_DELAYS = _env_csv_ints('DEBUG_SPAWN_LOG_SAMPLE_DELAYS', [25, 70])
+
+# Warm pool configuration
+WARM_RUNNER_COUNTS = _parse_warm_runner_counts()
+WARM_POOL_INTERVAL = _env_int('WARM_POOL_INTERVAL', 30)
+WARM_RUNNER_NAME_PREFIX = (os.environ.get('WARM_RUNNER_NAME_PREFIX', 'warm') or 'warm').strip() or 'warm'
+WARM_PROVISIONING_GRACE_SECONDS = _env_int('WARM_PROVISIONING_GRACE_SECONDS', 180)
+WARM_OFFLINE_CLEANUP_SECONDS = _env_int('WARM_OFFLINE_CLEANUP_SECONDS', 600)
+WARM_POOL_MAX_SPAWN_PER_TICK = _env_int('WARM_POOL_MAX_SPAWN_PER_TICK', 2)
 
 # Secret file path for persistence
 SECRET_FILE = Path('/data/webhook_secret')
@@ -478,42 +551,158 @@ def get_registration_token() -> str | None:
     return None
 
 
-def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
-    """Spawn an ephemeral runner container for a job."""
-    # Validate job_id
-    if not isinstance(job_id, int) or job_id <= 0:
+def _get_runners_endpoint_base() -> str:
+    owner, repo = parse_github_url(GITHUB_URL)
+    if repo:
+        return f"/repos/{owner}/{repo}/actions/runners"
+    return f"/orgs/{owner}/actions/runners"
+
+
+def list_self_hosted_runners() -> list[dict]:
+    """List all self-hosted runners (paginated)."""
+    endpoint = _get_runners_endpoint_base()
+    page = 1
+    runners: list[dict] = []
+
+    while True:
+        result = github_api_request(f"{endpoint}?per_page=100&page={page}")
+        if not result or 'runners' not in result:
+            break
+        batch = result.get('runners') or []
+        runners.extend(batch)
+        total_count = int(result.get('total_count') or 0)
+        if len(runners) >= total_count:
+            break
+        if len(batch) < 100:
+            break
+        page += 1
+
+    return runners
+
+
+def delete_runner(runner_id: int) -> bool:
+    """Delete (remove) a self-hosted runner registration from GitHub."""
+    try:
+        rid = int(runner_id)
+    except Exception:
+        return False
+    if rid <= 0:
+        return False
+    endpoint = f"{_get_runners_endpoint_base()}/{rid}"
+    result = github_api_request(endpoint, method='DELETE')
+    return result is not None
+
+
+def _runner_label_set(runner: dict) -> set[str]:
+    labels = runner.get('labels') or []
+    out: set[str] = set()
+    for label in labels:
+        if isinstance(label, dict):
+            name = str(label.get('name') or '').strip().lower()
+        else:
+            name = str(label).strip().lower()
+        if name:
+            out.add(name)
+    return out
+
+
+def _count_controller_runner_containers() -> int | None:
+    """Count running runner containers started by this controller (best-effort)."""
+    try:
+        ps = subprocess.run(
+            [
+                'docker',
+                'ps',
+                '--filter',
+                'label=gh-runner-controller=1',
+                '--format',
+                '{{.ID}}',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if ps.returncode != 0:
+            return None
+        return len([line for line in (ps.stdout or '').splitlines() if line.strip()])
+    except Exception:
+        return None
+
+
+def spawn_runner(
+    job_id: int,
+    job_name: str,
+    labels: list[str],
+    *,
+    track_job: bool = True,
+    purpose: str = 'job',
+    runner_name_override: str | None = None,
+) -> bool:
+    """Spawn an ephemeral runner container (job-driven or warm pool)."""
+    # Validate job_id only for job-driven spawns.
+    if track_job and (not isinstance(job_id, int) or job_id <= 0):
         logger.error(f"Invalid job_id: {job_id}")
         return False
-    
-    with runners_lock:
-        if len(active_runners) >= MAX_RUNNERS:
+    # Detect host architecture early (used for naming and platform selection).
+    host_machine = platform.machine().lower()
+    is_host_arm = host_machine in ('aarch64', 'arm64')
+    normalized_labels = [str(l).strip().lower() for l in (labels or []) if str(l).strip()]
+    log_context = f"job {job_id}" if track_job else purpose
+
+    token: str | None = None
+    if track_job:
+        with runners_lock:
+            container_count = _count_controller_runner_containers()
+            if container_count is None:
+                container_count = len(active_runners)
+            if container_count >= MAX_RUNNERS:
+                logger.warning(f"Maximum runners ({MAX_RUNNERS}) reached, cannot spawn new runner")
+                return False
+
+            if job_id in active_runners:
+                logger.info(f"Runner already exists for job {job_id}")
+                return True
+
+            # Get registration token inside the lock to prevent race conditions at small scale.
+            token = get_registration_token()
+            if not token:
+                logger.error("Failed to get registration token")
+                return False
+
+            # Re-check runner existence after token acquisition
+            if job_id in active_runners:
+                logger.info(f"Runner already exists for job {job_id} (after token acquisition)")
+                return True
+    else:
+        container_count = _count_controller_runner_containers()
+        if container_count is None:
+            with runners_lock:
+                container_count = len(active_runners)
+        if container_count >= MAX_RUNNERS:
             logger.warning(f"Maximum runners ({MAX_RUNNERS}) reached, cannot spawn new runner")
             return False
-        
-        if job_id in active_runners:
-            logger.info(f"Runner already exists for job {job_id}")
-            return True
-        
-        # Get registration token inside the lock to prevent race conditions
+
         token = get_registration_token()
         if not token:
             logger.error("Failed to get registration token")
             return False
-        
-        # Re-check runner existence after token acquisition
-        if job_id in active_runners:
-            logger.info(f"Runner already exists for job {job_id} (after token acquisition)")
-            return True
-    
-    # Generate unique runner name (moved outside the lock since we have the token)
-    runner_name = f"ephemeral-{job_id}-{int(time.time())}"
+
+    # Generate unique runner name
+    if track_job:
+        runner_name = f"ephemeral-{job_id}-{int(time.time())}"
+    else:
+        if runner_name_override and runner_name_override.strip():
+            runner_name = runner_name_override.strip()
+        else:
+            arch_hint = 'arm64' if is_host_arm else 'x64'
+            if 'arm64' in normalized_labels:
+                arch_hint = 'arm64'
+            elif 'x64' in normalized_labels or 'amd64' in normalized_labels:
+                arch_hint = 'x64'
+            runner_name = f"{WARM_RUNNER_NAME_PREFIX}-{arch_hint}-{int(time.time())}-{secrets.token_hex(3)}"
 
     # Determine requested architecture label and container platform
     platform_args: list[str] = []
-    
-    # Detect host architecture
-    host_machine = platform.machine().lower()
-    is_host_arm = host_machine in ('aarch64', 'arm64')
     
     # Default to host architecture
     if is_host_arm:
@@ -522,20 +711,18 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         arch_label = 'x64'
         
     # Check requested labels for architecture override
-    normalized_labels = [l.lower() for l in labels]
-    
     if 'arm64' in normalized_labels:
         arch_label = 'arm64'
         if not is_host_arm:
             platform_args = ['--platform', 'linux/arm64']
-            logger.info(f"Job {job_id} requested arm64 on {host_machine} host, using emulation")
+            logger.info("%s requested arm64 on %s host, using emulation", log_context, host_machine)
     elif 'x64' in normalized_labels or 'amd64' in normalized_labels:
         arch_label = 'x64'
         if is_host_arm:
             platform_args = ['--platform', 'linux/amd64']
             logger.info(
-                "Job %s requested amd64/x64 on %s host; using linux/amd64 emulation",
-                job_id,
+                "%s requested amd64/x64 on %s host; using linux/amd64 emulation",
+                log_context,
                 host_machine,
             )
 
@@ -633,12 +820,17 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
     
     # Adjust RUNNER_LABELS to match architecture
     # Remove any existing arch labels from the configured defaults
-    base_labels = [l for l in RUNNER_LABELS.split(',') if l.lower() not in ('x64', 'amd64', 'arm64')]
-    runner_labels = ','.join(base_labels + [arch_label])
+    base_labels = [
+        l.strip()
+        for l in (RUNNER_LABELS or '').split(',')
+        if l.strip() and l.strip().lower() not in ('x64', 'amd64', 'arm64')
+    ]
+    runner_labels = ','.join([*base_labels, arch_label])
 
     if DEBUG_SPAWN_LOGS:
         logger.info(
-            "Spawn details: job_id=%s job_name=%s requested_labels=%s host_arch=%s selected_arch=%s platform_args=%s runner_labels=%s",
+            "Spawn details: purpose=%s job_id=%s job_name=%s requested_labels=%s host_arch=%s selected_arch=%s platform_args=%s runner_labels=%s",
+            purpose,
             job_id,
             job_name,
             labels,
@@ -669,7 +861,19 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
             logger.warning("Failed to pull runner image %s (continuing): %s", RUNNER_IMAGE, e)
     
     # Build docker command
-    cmd = ['docker', 'run', '-d', '--name', runner_name]
+    cmd = [
+        'docker',
+        'run',
+        '-d',
+        '--name',
+        runner_name,
+        '--label',
+        'gh-runner-controller=1',
+        '--label',
+        f'gh-runner-purpose={purpose}',
+        '--label',
+        f'gh-runner-arch={arch_label}',
+    ]
     if not DEBUG_KEEP_RUNNER_CONTAINER:
         cmd += ['--rm']  # Auto-remove when stopped
 
@@ -699,7 +903,7 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         '-e', f'GITHUB_TOKEN={token}',
         '-e', f'RUNNER_NAME={runner_name}',
         '-e', f'RUNNER_LABELS={runner_labels}',
-        '-e', f'JOB_ID={job_id}',
+        *(['-e', f'JOB_ID={job_id}'] if track_job else []),
         '-e', f'RUNNER_USE_HOST_DOCKER={str(use_host_docker).lower()}',
         *(['-e', 'DEBUG_DOTNET_DUMPS=true'] if DEBUG_DOTNET_DUMPS else []),
         *proxy_env,
@@ -756,15 +960,18 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             container_id = result.stdout.strip()
-            with runners_lock:
-                active_runners[job_id] = {
-                    'container_id': container_id,
-                    'runner_name': runner_name,
-                    'job_name': job_name,
-                    'started_at': time.time(),
-                    'dind_sidecar_name': dind_sidecar_name,
-                }
-            logger.info(f"Spawned runner {runner_name} for job {job_id} ({job_name})")
+            if track_job:
+                with runners_lock:
+                    active_runners[job_id] = {
+                        'container_id': container_id,
+                        'runner_name': runner_name,
+                        'job_name': job_name,
+                        'started_at': time.time(),
+                        'dind_sidecar_name': dind_sidecar_name,
+                    }
+                logger.info(f"Spawned runner {runner_name} for job {job_id} ({job_name})")
+            else:
+                logger.info("Spawned warm runner %s (%s)", runner_name, runner_labels)
 
             if DEBUG_SPAWN_LOGS:
                 # Docker-in-Docker + runner registration can take tens of seconds,
@@ -863,6 +1070,149 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
         return False
 
 
+def spawn_warm_runner(arch_label: str) -> bool:
+    """Spawn a warm idle runner for a specific architecture label (x64/arm64)."""
+    arch = _normalize_arch_label(arch_label)
+    if not arch:
+        logger.warning("Unknown arch for warm runner: %r", arch_label)
+        return False
+    return spawn_runner(0, 'warm', [arch], track_job=False, purpose='warm')
+
+
+def any_idle_runner_matches(job_labels: list[str]) -> bool:
+    """Return True if any online, non-busy runner has all job labels."""
+    required = {str(label).strip().lower() for label in (job_labels or []) if str(label).strip()}
+    if not required:
+        return False
+
+    runners = list_self_hosted_runners()
+    for runner in runners:
+        if str(runner.get('status') or '').lower() != 'online':
+            continue
+        if bool(runner.get('busy', False)):
+            continue
+        labels = _runner_label_set(runner)
+        if required.issubset(labels):
+            return True
+    return False
+
+
+def handle_queued_job(job_id: int, job_name: str, job_labels: list[str]) -> None:
+    """Decide whether to spawn immediately or rely on warm runners."""
+    try:
+        if WARM_RUNNER_COUNTS:
+            try:
+                if any_idle_runner_matches(job_labels):
+                    logger.info("Job %s has an idle matching runner; skipping spawn", job_id)
+                    return
+            except Exception as e:
+                logger.warning("Failed checking idle runner availability (continuing to spawn): %s", e)
+        spawn_runner(job_id, job_name, job_labels)
+    except Exception:
+        logger.exception("Failed handling queued job %s", job_id)
+
+
+def warm_pool_manager() -> None:
+    """Maintain a warm pool of idle runners per architecture."""
+    if not WARM_RUNNER_COUNTS:
+        return
+
+    offline_first_seen: dict[int, float] = {}
+    pending_spawns: dict[str, tuple[str, float]] = {}
+    pending_lock = threading.Lock()
+    warm_prefix = f"{WARM_RUNNER_NAME_PREFIX}-"
+
+    while True:
+        try:
+            now = time.time()
+
+            with pending_lock:
+                expired = [
+                    name
+                    for name, (_, started_at) in pending_spawns.items()
+                    if now - started_at >= WARM_PROVISIONING_GRACE_SECONDS
+                ]
+                for name in expired:
+                    pending_spawns.pop(name, None)
+
+            runners = list_self_hosted_runners()
+            warm_runners = [r for r in runners if str(r.get('name') or '').startswith(warm_prefix)]
+
+            # Track and cleanup stale offline warm runner registrations.
+            still_offline: set[int] = set()
+            for runner in warm_runners:
+                try:
+                    runner_id = int(runner.get('id'))
+                except Exception:
+                    continue
+                status = str(runner.get('status') or '').lower()
+                if status != 'offline':
+                    continue
+                still_offline.add(runner_id)
+                if runner_id not in offline_first_seen:
+                    offline_first_seen[runner_id] = now
+                    continue
+                if now - offline_first_seen[runner_id] >= WARM_OFFLINE_CLEANUP_SECONDS:
+                    name = str(runner.get('name') or '')
+                    logger.warning("Removing stale offline warm runner: %s (id=%s)", name, runner_id)
+                    if delete_runner(runner_id):
+                        offline_first_seen.pop(runner_id, None)
+
+            offline_first_seen = {rid: ts for rid, ts in offline_first_seen.items() if rid in still_offline}
+
+            idle_by_arch: dict[str, int] = {arch: 0 for arch in WARM_RUNNER_COUNTS}
+            for runner in warm_runners:
+                if str(runner.get('status') or '').lower() != 'online':
+                    continue
+                if bool(runner.get('busy', False)):
+                    continue
+                labels = _runner_label_set(runner)
+                for arch in idle_by_arch:
+                    if arch in labels:
+                        idle_by_arch[arch] += 1
+                        break
+
+            pending_by_arch: dict[str, int] = {arch: 0 for arch in WARM_RUNNER_COUNTS}
+            with pending_lock:
+                pending_items = list(pending_spawns.values())
+            for arch, _ in pending_items:
+                if arch in pending_by_arch:
+                    pending_by_arch[arch] += 1
+
+            spawned_this_tick = 0
+            for arch, target in WARM_RUNNER_COUNTS.items():
+                need = target - idle_by_arch.get(arch, 0) - pending_by_arch.get(arch, 0)
+                while need > 0 and spawned_this_tick < WARM_POOL_MAX_SPAWN_PER_TICK:
+                    current = _count_controller_runner_containers()
+                    if current is not None and current >= MAX_RUNNERS:
+                        break
+
+                    warm_name = f"{WARM_RUNNER_NAME_PREFIX}-{arch}-{int(now)}-{secrets.token_hex(3)}"
+                    with pending_lock:
+                        pending_spawns[warm_name] = (arch, now)
+
+                    def _spawn(name: str, arch_label: str) -> None:
+                        try:
+                            ok = spawn_runner(0, 'warm', [arch_label], track_job=False, purpose='warm', runner_name_override=name)
+                            if not ok:
+                                with pending_lock:
+                                    pending_spawns.pop(name, None)
+                        except Exception:
+                            with pending_lock:
+                                pending_spawns.pop(name, None)
+                            logger.exception("Warm runner spawn failed (name=%s arch=%s)", name, arch_label)
+
+                    thread = threading.Thread(target=_spawn, args=(warm_name, arch), daemon=True)
+                    thread.start()
+                    spawned_this_tick += 1
+                    need -= 1
+
+        except Exception:
+            logger.exception("Warm pool reconcile failed")
+
+        time.sleep(max(5, WARM_POOL_INTERVAL))
+
+
 def cleanup_runner(job_id: int) -> None:
     """Clean up a runner container after job completion."""
     with runners_lock:
@@ -945,11 +1295,15 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
             
             with runners_lock:
                 runner_count = len(active_runners)
+
+            controller_container_count = _count_controller_runner_containers()
             
             response = {
                 'status': 'healthy',
                 'active_runners': runner_count,
-                'max_runners': MAX_RUNNERS
+                'max_runners': MAX_RUNNERS,
+                'warm_runners': WARM_RUNNER_COUNTS,
+                'runner_containers': controller_container_count,
             }
             self.wfile.write(json.dumps(response).encode())
         elif self.path == '/':
@@ -1041,9 +1395,9 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             
-            # Spawn runner in background
+            # Decide spawn vs warm pool in background
             thread = threading.Thread(
-                target=spawn_runner,
+                target=handle_queued_job,
                 args=(job_id, job_name, job_labels)
             )
             thread.start()
@@ -1103,6 +1457,11 @@ def main():
     # Start cleanup thread
     cleanup_thread = threading.Thread(target=cleanup_stale_runners, daemon=True)
     cleanup_thread.start()
+
+    # Start warm pool manager (optional)
+    if WARM_RUNNER_COUNTS:
+        warm_thread = threading.Thread(target=warm_pool_manager, daemon=True)
+        warm_thread.start()
     
     # Start server
     server = http.server.HTTPServer(('0.0.0.0', PORT), WebhookHandler)
@@ -1111,6 +1470,7 @@ def main():
     logger.info(f"Runner image: {RUNNER_IMAGE}")
     logger.info(f"Pull runner image before spawn: {PULL_RUNNER_IMAGE}")
     logger.info(f"Max runners: {MAX_RUNNERS}")
+    logger.info(f"Warm runners: {WARM_RUNNER_COUNTS or '(disabled)'}")
     logger.info(f"Docker network for runners: {DOCKER_NETWORK or '(default)'}")
     logger.info(f"Runner proxy enabled: {bool(RUNNER_HTTP_PROXY or RUNNER_HTTPS_PROXY or RUNNER_ALL_PROXY)}")
     logger.info(f"DEBUG_SPAWN_LOGS: {DEBUG_SPAWN_LOGS}")

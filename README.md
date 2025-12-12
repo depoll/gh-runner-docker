@@ -167,6 +167,9 @@ That's it! The stack will:
 | `WEBHOOK_HOST` | No | - | Public URL for auto-registering webhook |
 | `WEBHOOK_SECRET` | No | Auto-generated | Webhook secret; auto-generated if not provided |
 | `MAX_RUNNERS` | No | `10` | Max concurrent ephemeral runners |
+| `WARM_RUNNERS` | No | - | Keep a warm pool per architecture, e.g. `x64=2,arm64=1` |
+| `WARM_RUNNERS_X64` | No | - | Override warm x64 runner count |
+| `WARM_RUNNERS_ARM64` | No | - | Override warm arm64 runner count |
 | `RUNNER_LABELS` | No | `self-hosted,linux` | Comma-separated runner labels |
 | `RUNNER_GROUP` | No | - | Runner group name (organization-level runners only) |
 | `REPLICAS` | No | `3` | Number of static runners |
@@ -181,6 +184,27 @@ That's it! The stack will:
 | `RUNNER_AUTO_INSTALL_BINFMT_AMD64` | No | - | Controller: if amd64 emulation is missing on ARM, attempt to install binfmt/qemu-user via a privileged `tonistiigi/binfmt` container |
 
 > Tip: If your proxy runs on the Docker host (e.g., WARP proxy forwarded with `socat`), you can usually use `host.docker.internal` as the hostname from inside runner containers.
+
+> Note: Many Actions (including `android-actions/setup-android`) honor `HTTP(S)_PROXY` as an **HTTP proxy** (CONNECT). Cloudflare WARP “proxy mode” typically provides a **SOCKS5** listener. If you point `HTTPS_PROXY` at a SOCKS5 URL, some tooling will ignore it and still go direct.
+
+If you're using WARP proxy mode (SOCKS5), you’ll usually need a small HTTP→SOCKS bridge. One simple option is `gost`:
+
+```bash
+# Example: WARP provides SOCKS5 on 127.0.0.1:40000 (host)
+# Start an HTTP proxy on 0.0.0.0:3128 that forwards via that SOCKS5 proxy.
+docker run -d --name warp-http-proxy --restart unless-stopped \
+   --network host \
+   ginuerzh/gost:latest \
+   -L=http://0.0.0.0:3128 \
+   -F=socks5://127.0.0.1:40000
+```
+
+Then set (in the controller environment):
+
+```bash
+RUNNER_HTTPS_PROXY=http://host.docker.internal:3128
+RUNNER_HTTP_PROXY=http://host.docker.internal:3128
+```
 
 > **ARM hosts + `runs-on: …, x64`**: The controller runs the runner container as `linux/amd64` under emulation (QEMU).
 
