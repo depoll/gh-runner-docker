@@ -90,6 +90,11 @@ services:
       # - false: disable sidecar
       RUNNER_DIND_SIDECAR: ${RUNNER_DIND_SIDECAR:-auto}
       RUNNER_DIND_IMAGE: ${RUNNER_DIND_IMAGE:-docker:27-dind}
+      # Optional: outbound proxy for runner containers (work around egress blocks)
+      RUNNER_HTTP_PROXY: ${RUNNER_HTTP_PROXY:-}
+      RUNNER_HTTPS_PROXY: ${RUNNER_HTTPS_PROXY:-}
+      RUNNER_ALL_PROXY: ${RUNNER_ALL_PROXY:-}
+      RUNNER_NO_PROXY: ${RUNNER_NO_PROXY:-}
       # Optional (ARM hosts): If linux/amd64 emulation is missing after a reboot,
       # the controller can attempt to install binfmt/qemu-user automatically.
       # Note: this runs a privileged tonistiigi/binfmt container via the host Docker socket.
