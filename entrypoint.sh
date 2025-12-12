@@ -239,7 +239,7 @@ trap cleanup SIGTERM SIGINT
 
 # Start containerd first
 echo "Starting containerd..."
-containerd &
+containerd --log-level warn &
 sleep 5
 
 # Start Docker daemon for Docker-in-Docker
@@ -251,6 +251,9 @@ test_docker_storage() {
     local driver=$1
     local opts=$2
     echo "Testing storage driver: $driver"
+
+    local dockerd_log="/tmp/dockerd-${driver}.log"
+    last_dockerd_log="$dockerd_log"
     
     # Kill any existing dockerd
     pkill dockerd 2>/dev/null || true
@@ -258,31 +261,71 @@ test_docker_storage() {
     
     # Try to start with the specified driver
     if [ -n "$opts" ]; then
-        dockerd --host=unix:///var/run/docker.sock --storage-driver=$driver $opts &
+        dockerd --host=unix:///var/run/docker.sock --storage-driver=$driver $opts >"$dockerd_log" 2>&1 &
     else
-        dockerd --host=unix:///var/run/docker.sock --storage-driver=$driver &
+        dockerd --host=unix:///var/run/docker.sock --storage-driver=$driver >"$dockerd_log" 2>&1 &
     fi
     
     local dockerd_pid=$!
-    sleep 5
+    sleep 8
     
     # Check if Docker started successfully
-    if docker info >/dev/null 2>&1; then
+    if timeout 3 docker info >/dev/null 2>&1; then
         echo "Successfully started Docker with $driver storage driver"
         return 0
     else
         echo "Failed to start Docker with $driver storage driver"
+        echo "Last 120 lines of $dockerd_log:" >&2
+        tail -n 120 "$dockerd_log" >&2 || true
         kill $dockerd_pid 2>/dev/null || true
         return 1
     fi
 }
 
-# Try different storage drivers in order of preference
-# (Don't pass overlay2.override_kernel_check; it's not supported on all dockerd versions.)
-if ! test_docker_storage "overlay2" ""; then
-    if ! test_docker_storage "fuse-overlayfs" ""; then
-        echo "Falling back to vfs storage driver (slower performance)"
-        test_docker_storage "vfs" ""
+supports_overlay2() {
+    grep -qE '(^|\s)overlay(\s|$)' /proc/filesystems 2>/dev/null || return 1
+
+    local base
+    base="$(mktemp -d /tmp/overlay-probe.XXXXXX)" || return 1
+    local lower="$base/lower"
+    local upper="$base/upper"
+    local work="$base/work"
+    local merged="$base/merged"
+
+    mkdir -p "$lower" "$upper" "$work" "$merged" || { rm -rf "$base"; return 1; }
+    echo "probe" >"$lower/file" 2>/dev/null || true
+
+    if mount -t overlay overlay -o "lowerdir=$lower,upperdir=$upper,workdir=$work" "$merged" >/dev/null 2>&1; then
+        umount "$merged" >/dev/null 2>&1 || true
+        rm -rf "$base" || true
+        return 0
+    fi
+
+    rm -rf "$base" || true
+    return 1
+}
+
+# Try different storage drivers in order of preference.
+# If DOCKER_STORAGE_DRIVER is set, only attempt that driver.
+last_dockerd_log=""
+if [ -n "${DOCKER_STORAGE_DRIVER:-}" ]; then
+    echo "DOCKER_STORAGE_DRIVER is set: ${DOCKER_STORAGE_DRIVER}"
+    test_docker_storage "${DOCKER_STORAGE_DRIVER}" ""
+else
+    # (Don't pass overlay2.override_kernel_check; it's not supported on all dockerd versions.)
+    if supports_overlay2; then
+        if ! test_docker_storage "overlay2" ""; then
+            if ! test_docker_storage "fuse-overlayfs" ""; then
+                echo "Falling back to vfs storage driver (slower performance)"
+                test_docker_storage "vfs" ""
+            fi
+        fi
+    else
+        echo "Overlay mount probe failed; trying fuse-overlayfs then vfs"
+        if ! test_docker_storage "fuse-overlayfs" ""; then
+            echo "Falling back to vfs storage driver (slower performance)"
+            test_docker_storage "vfs" ""
+        fi
     fi
 fi
 
@@ -291,13 +334,22 @@ sleep 5
 # Wait for Docker daemon to be ready
 echo "Waiting for Docker daemon to start..."
 for i in {1..30}; do
-    if docker info >/dev/null 2>&1; then
+    if timeout 3 docker info >/dev/null 2>&1; then
         echo "Docker daemon is ready"
         break
     fi
     echo "Waiting for Docker daemon... ($i/30)"
     sleep 2
 done
+
+if ! timeout 3 docker info >/dev/null 2>&1; then
+    echo "ERROR: Docker daemon failed to start" >&2
+    if [ -n "$last_dockerd_log" ]; then
+        echo "Last 200 lines of $last_dockerd_log:" >&2
+        tail -n 200 "$last_dockerd_log" >&2 || true
+    fi
+    exit 1
+fi
 
 # Start background cleanup job if DEPLOYMENT_ID is provided
 if [ -n "$DEPLOYMENT_ID" ]; then
