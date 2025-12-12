@@ -68,6 +68,14 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       # Optional: Labels for runners (comma-separated)
       RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,linux}
+      # Optional: Warm pool sizes per architecture (keeps idle runners ready to accept jobs)
+      # Examples:
+      #   WARM_RUNNERS=x64=2,arm64=1
+      #   WARM_RUNNERS_X64=2
+      #   WARM_RUNNERS_ARM64=1
+      WARM_RUNNERS: ${WARM_RUNNERS:-}
+      WARM_RUNNERS_X64: ${WARM_RUNNERS_X64:-}
+      WARM_RUNNERS_ARM64: ${WARM_RUNNERS_ARM64:-}
       # Optional: Maximum concurrent runners
       MAX_RUNNERS: ${MAX_RUNNERS:-10}
       # Optional: Runner image to use
