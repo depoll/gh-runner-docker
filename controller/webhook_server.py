@@ -466,7 +466,8 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
 
             if DEBUG_SPAWN_LOGS:
                 # Give the container a moment to start and emit early errors.
-                time.sleep(2)
+                # Docker-in-Docker + runner registration often take a few seconds.
+                time.sleep(8)
                 try:
                     ps = subprocess.run(
                         ['docker', 'ps', '-a', '--filter', f'name={runner_name}', '--format', '{{.Status}}'],
@@ -479,7 +480,7 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
                         logger.info("Runner container status: %s", status_line)
 
                     logs = subprocess.run(
-                        ['docker', 'logs', '--tail', '80', runner_name],
+                        ['docker', 'logs', '--tail', '200', runner_name],
                         capture_output=True,
                         text=True,
                         timeout=10,

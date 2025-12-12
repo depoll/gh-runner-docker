@@ -10,6 +10,26 @@ set -o pipefail
 echo "=== GitHub Actions Ephemeral Runner ==="
 echo "Starting at: $(date)"
 
+configure_iptables_backend() {
+    # Some hosts/kernels (or environments) don't support nftables; docker's default
+    # iptables-nft backend then fails with "Failed to initialize nft: Protocol not supported".
+    # Prefer iptables-legacy when available.
+    if command -v update-alternatives >/dev/null 2>&1; then
+        if command -v iptables-legacy >/dev/null 2>&1; then
+            update-alternatives --set iptables /usr/sbin/iptables-legacy >/dev/null 2>&1 || true
+        fi
+        if command -v ip6tables-legacy >/dev/null 2>&1; then
+            update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy >/dev/null 2>&1 || true
+        fi
+        if command -v arptables-legacy >/dev/null 2>&1; then
+            update-alternatives --set arptables /usr/sbin/arptables-legacy >/dev/null 2>&1 || true
+        fi
+        if command -v ebtables-legacy >/dev/null 2>&1; then
+            update-alternatives --set ebtables /usr/sbin/ebtables-legacy >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
 # Initialize runner_pid to avoid undefined variable in cleanup trap
 runner_pid=""
 
@@ -46,6 +66,7 @@ sleep 3
 
 # Start Docker daemon for Docker-in-Docker
 echo "Starting Docker daemon..."
+configure_iptables_backend
 
 # Function to test Docker storage driver
 test_docker_storage() {
@@ -79,7 +100,8 @@ test_docker_storage() {
 }
 
 # Try different storage drivers in order of preference
-if ! test_docker_storage "overlay2" "--storage-opt=overlay2.override_kernel_check=true"; then
+# (Don't pass overlay2.override_kernel_check; it's not supported on all dockerd versions.)
+if ! test_docker_storage "overlay2" ""; then
     if ! test_docker_storage "fuse-overlayfs" ""; then
         echo "Falling back to vfs storage driver (slower performance)"
         test_docker_storage "vfs" ""
