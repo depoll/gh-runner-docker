@@ -512,6 +512,38 @@ def spawn_runner(job_id: int, job_name: str, labels: list[str]) -> bool:
                             logger.info("Runner logs (tail @~%ss):\n%s", int(delay), logs.stdout.rstrip())
                         if logs.stderr.strip():
                             logger.info("Runner logs stderr (tail @~%ss):\n%s", int(delay), logs.stderr.rstrip())
+
+                        # If the container is still running, also peek at internal logs
+                        # that don't go to stdout (dockerd logs, runner config logs).
+                        exec_dockerd = subprocess.run(
+                            [
+                                'docker', 'exec', runner_name, 'sh', '-lc',
+                                'set -e; f=$(ls -1 /tmp/dockerd-*.log 2>/dev/null | head -n 1 || true); '
+                                'if [ -n "$f" ]; then echo "=== $f (tail) ==="; tail -n 200 "$f"; fi',
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=15,
+                        )
+                        if exec_dockerd.stdout.strip():
+                            logger.info("Runner dockerd log (exec @~%ss):\n%s", int(delay), exec_dockerd.stdout.rstrip())
+                        if exec_dockerd.stderr.strip():
+                            logger.info("Runner dockerd log stderr (exec @~%ss):\n%s", int(delay), exec_dockerd.stderr.rstrip())
+
+                        exec_config = subprocess.run(
+                            [
+                                'docker', 'exec', runner_name, 'sh', '-lc',
+                                'if [ -f /tmp/runner-config.log ]; then '
+                                'echo "=== /tmp/runner-config.log (tail) ==="; tail -n 200 /tmp/runner-config.log; fi',
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=15,
+                        )
+                        if exec_config.stdout.strip():
+                            logger.info("Runner config log (exec @~%ss):\n%s", int(delay), exec_config.stdout.rstrip())
+                        if exec_config.stderr.strip():
+                            logger.info("Runner config log stderr (exec @~%ss):\n%s", int(delay), exec_config.stderr.rstrip())
                     except Exception as log_exc:
                         logger.debug(f"Failed to gather debug logs for {runner_name}: {log_exc}")
 

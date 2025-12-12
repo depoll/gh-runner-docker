@@ -4,22 +4,46 @@ set -e
 set -o pipefail
 
 configure_iptables_backend() {
-    # Some hosts/kernels don't support nftables; docker's default iptables-nft backend
-    # then fails with "Failed to initialize nft: Protocol not supported".
-    # Prefer iptables-legacy when available.
-    if command -v update-alternatives >/dev/null 2>&1; then
-        if command -v iptables-legacy >/dev/null 2>&1; then
-            update-alternatives --set iptables /usr/sbin/iptables-legacy >/dev/null 2>&1 || true
+    # Docker uses iptables to set up networking/NAT. Some environments don't support
+    # nftables (iptables-nft), while others don't support legacy iptables (ip_tables).
+    # Choose the backend that actually works on this kernel.
+    if ! command -v update-alternatives >/dev/null 2>&1; then
+        return
+    fi
+
+    local iptables_nft
+    local iptables_legacy
+    iptables_nft="$(command -v iptables-nft 2>/dev/null || true)"
+    iptables_legacy="$(command -v iptables-legacy 2>/dev/null || true)"
+
+    # Prefer nft if it can talk to the kernel NAT table.
+    if [ -n "$iptables_nft" ] && "$iptables_nft" -t nat -L >/dev/null 2>&1; then
+        update-alternatives --set iptables "$iptables_nft" >/dev/null 2>&1 || true
+        local ip6tables_nft
+        ip6tables_nft="$(command -v ip6tables-nft 2>/dev/null || true)"
+        if [ -n "$ip6tables_nft" ]; then
+            update-alternatives --set ip6tables "$ip6tables_nft" >/dev/null 2>&1 || true
         fi
-        if command -v ip6tables-legacy >/dev/null 2>&1; then
-            update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy >/dev/null 2>&1 || true
+    elif [ -n "$iptables_legacy" ] && "$iptables_legacy" -t nat -L >/dev/null 2>&1; then
+        update-alternatives --set iptables "$iptables_legacy" >/dev/null 2>&1 || true
+        local ip6tables_legacy
+        ip6tables_legacy="$(command -v ip6tables-legacy 2>/dev/null || true)"
+        if [ -n "$ip6tables_legacy" ]; then
+            update-alternatives --set ip6tables "$ip6tables_legacy" >/dev/null 2>&1 || true
         fi
-        if command -v arptables-legacy >/dev/null 2>&1; then
-            update-alternatives --set arptables /usr/sbin/arptables-legacy >/dev/null 2>&1 || true
-        fi
-        if command -v ebtables-legacy >/dev/null 2>&1; then
-            update-alternatives --set ebtables /usr/sbin/ebtables-legacy >/dev/null 2>&1 || true
-        fi
+    else
+        echo "WARNING: Neither iptables-nft nor iptables-legacy appears functional (nat table unavailable)" >&2
+    fi
+
+    local arptables_legacy
+    arptables_legacy="$(command -v arptables-legacy 2>/dev/null || true)"
+    if [ -n "$arptables_legacy" ]; then
+        update-alternatives --set arptables "$arptables_legacy" >/dev/null 2>&1 || true
+    fi
+    local ebtables_legacy
+    ebtables_legacy="$(command -v ebtables-legacy 2>/dev/null || true)"
+    if [ -n "$ebtables_legacy" ]; then
+        update-alternatives --set ebtables "$ebtables_legacy" >/dev/null 2>&1 || true
     fi
 }
 
