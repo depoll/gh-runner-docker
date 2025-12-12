@@ -1,10 +1,14 @@
+## syntax=docker/dockerfile:1.7
+
 FROM python:3.11-slim
 
 # Install Docker CLI
-RUN apt-get update && apt-get install -y \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y \
     docker.io \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && true
 
 WORKDIR /app
 

@@ -1,3 +1,5 @@
+## syntax=docker/dockerfile:1.7
+
 # nginx reverse proxy for webhook controller with native ACME support
 #
 # This uses nginx mainline with the ngx_http_acme_module for automatic
@@ -16,28 +18,32 @@
 FROM nginx:mainline-bookworm
 
 # Install curl for health checks, openssl for fallback, and gnupg for repo setup
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     curl \
     openssl \
     gnupg2 \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && true
 
 # Add nginx.org official repository for dynamic modules
 RUN curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/debian bookworm nginx" > /etc/apt/sources.list.d/nginx.list
 
 # Install the nginx ACME module
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     nginx-module-acme \
-    && rm -rf /var/lib/apt/lists/*
+    && true
 
 # Load the ACME module - add to main nginx.conf
 RUN sed -i '1i load_module modules/ngx_http_acme_module.so;' /etc/nginx/nginx.conf
 
 # Create directories for ACME state and certificates
-RUN mkdir -p /var/cache/nginx/acme && chmod 700 /var/cache/nginx/acme
-RUN mkdir -p /etc/nginx/acme && chmod 700 /etc/nginx/acme
+RUN mkdir -p /var/cache/nginx/acme /etc/nginx/acme \
+    && chmod 700 /var/cache/nginx/acme /etc/nginx/acme
 
 # Copy nginx configuration templates
 # nginx automatically processes *.template files from /etc/nginx/templates/
