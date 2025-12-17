@@ -54,6 +54,10 @@ services:
       WEBHOOK_HOST: ${WEBHOOK_HOST:-}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       RUNNER_LABELS: ${RUNNER_LABELS:-self-hosted,linux}
+      # Optional: Warm pool sizes per architecture (keeps idle runners ready to accept jobs)
+      WARM_RUNNERS: ${WARM_RUNNERS:-}
+      WARM_RUNNERS_X64: ${WARM_RUNNERS_X64:-}
+      WARM_RUNNERS_ARM64: ${WARM_RUNNERS_ARM64:-}
       MAX_RUNNERS: ${MAX_RUNNERS:-10}
       RUNNER_IMAGE: ${RUNNER_IMAGE:-ghcr.io/depoll/gh-runner-docker:ephemeral}
       DOCKER_NETWORK: ${DOCKER_NETWORK:-gh-runner-network}
